@@ -1,0 +1,153 @@
+name: Nightly
+
+# Runs the integration and multi-instance layers against main many times, to
+# surface rare concurrency failures a single PR run can miss. Tests are never
+# retried: an intermittent failure in a concurrency test is treated as a
+# possible race, not as noise. A failure opens an issue (or comments on the one
+# still open).
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC, off the busy hour
+  workflow_dispatch:
+    inputs:
+      count:
+        description: Times each test runs (go test -count)
+        default: "5"
+      simulate_failure:
+        description: Fail after the tests, to check the issue reporting path
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One nightly at a time; a manual run never cancels the scheduled one.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: Integration (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      seed: ${{ steps.seed.outputs.value }}
+    env:
+      INTEGRATION_LOG_DIR: ${{ github.workspace }}/integration-logs
+      # Inputs are text typed by whoever dispatches the run: validated, and only
+      # ever used through the environment.
+      COUNT: ${{ inputs.count || '5' }}
+      SIMULATE_FAILURE: ${{ inputs.simulate_failure || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check inputs
+        run: |
+          [[ "$COUNT" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "count must be a number from 1 to 999" >&2; exit 1; }
+
+      # shell: bash so a failing `go test` fails the step despite the pipe to tee.
+      - name: go test (integration, repeated)
+        shell: bash
+        run: go test -tags integration -race -count="$COUNT" -shuffle=on -timeout 50m -v ./test/integration/ 2>&1 | tee test-output.txt
+
+      - name: Simulated failure
+        if: env.SIMULATE_FAILURE == 'true'
+        run: |
+          echo "Simulated failure requested through workflow_dispatch." >&2
+          exit 1
+
+      # The seed that reproduces this ordering; it is printed on the test log.
+      - name: Find the shuffle seed
+        id: seed
+        if: always()
+        run: echo "value=$(grep -m1 -o -- '-test.shuffle [0-9]*' test-output.txt | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      # cancelled() too: the job timeout cancels the job, and failure() is false then.
+      - name: Upload container logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-integration-logs
+          path: integration-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  multi-instance:
+    name: Multi-instance (nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      seed: ${{ steps.seed.outputs.value }}
+    env:
+      INTEGRATION_LOG_DIR: ${{ github.workspace }}/integration-logs
+      MULTIINSTANCE_COVERDIR: ${{ github.workspace }}/coverage-multiinstance
+      COUNT: ${{ inputs.count || '5' }}
+      SIMULATE_FAILURE: ${{ inputs.simulate_failure || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check inputs
+        run: |
+          [[ "$COUNT" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "count must be a number from 1 to 999" >&2; exit 1; }
+
+      - name: go test (multi-instance, repeated)
+        shell: bash
+        run: go test -tags multiinstance -race -count="$COUNT" -shuffle=on -timeout 50m -v ./test/multiinstance/ 2>&1 | tee test-output.txt
+
+      - name: Simulated failure
+        if: env.SIMULATE_FAILURE == 'true'
+        run: |
+          echo "Simulated failure requested through workflow_dispatch." >&2
+          exit 1
+
+      - name: Find the shuffle seed
+        id: seed
+        if: always()
+        run: echo "value=$(grep -m1 -o -- '-test.shuffle [0-9]*' test-output.txt | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload container and instance logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-multi-instance-logs
+          path: integration-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  report:
+    name: Report failures
+    needs: [integration, multi-instance]
+    # Only after a real failure: a cancelled or skipped run is not reported.
+    if: always() && (needs.integration.result == 'failure' || needs.multi-instance.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # the only job in this workflow that can write issues
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          MULTI_INSTANCE_RESULT: ${{ needs.multi-instance.result }}
+          INTEGRATION_SEED: ${{ needs.integration.outputs.seed }}
+          MULTI_INSTANCE_SEED: ${{ needs.multi-instance.outputs.seed }}
+        run: bash .github/scripts/nightly-report.sh

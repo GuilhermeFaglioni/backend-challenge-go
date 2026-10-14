@@ -51,6 +51,7 @@ jobs:
         run: |
           bash .github/scripts/pr-title_test.sh
           bash .github/scripts/image-tags_test.sh
+          bash .github/scripts/nightly-report_test.sh
 
       - name: go mod tidy
         # -diff prints what tidy would change and fails without touching files;
