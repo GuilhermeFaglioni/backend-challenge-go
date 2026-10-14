@@ -27,6 +27,14 @@ docker compose up --build
 | LocalStack (SQS) | `http://localhost:4566` |
 | Keycloak | `http://localhost:8180` (admin: `admin` / `admin`) |
 
+Se alguma porta do host já estiver ocupada (por exemplo, outro Postgres na 5432), mude-a sem editar arquivos: `POSTGRES_PORT=55432 docker compose up --build` (também existem `LOCALSTACK_PORT` e `KEYCLOAK_PORT`).
+
+Verificação automática do ambiente (migrations, instâncias, token e filas), a mesma executada no CI:
+
+```bash
+bash .github/scripts/smoke.sh
+```
+
 Endpoints disponíveis no scaffold:
 
 ```bash

@@ -5,6 +5,9 @@ name: wagering
 # separate process with its own connections and memory.
 x-app: &app
   build: .
+  # CI builds the image once and runs it with `--no-build`, so the smoke test
+  # exercises exactly the image that was built in the same run.
+  image: ${APP_IMAGE:-wagering-app:local}
   restart: unless-stopped
   depends_on:
     migrate:
@@ -27,7 +30,7 @@ x-app: &app
     SQS_EVENTS_QUEUE: wager-events.fifo
     # Tokens carry the host-facing issuer; the metadata and keys are fetched
     # from inside the Docker network.
-    OIDC_ISSUER_URL: http://localhost:8180/realms/wagering
+    OIDC_ISSUER_URL: http://localhost:${KEYCLOAK_PORT:-8180}/realms/wagering
     OIDC_DISCOVERY_URL: http://keycloak:8080/realms/wagering
     OIDC_AUDIENCE: wallet-api
 
@@ -39,12 +42,15 @@ services:
       POSTGRES_PASSWORD: owner_local_pw
       POSTGRES_DB: wagering
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wagering_owner -d wagering"]
+      # Over TCP on purpose: during first-time initialization the image runs a
+      # temporary server that only listens on the Unix socket, and a socket
+      # check would report healthy right before that server restarts.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U wagering_owner -d wagering"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -67,7 +73,7 @@ services:
       SERVICES: sqs
       AWS_DEFAULT_REGION: us-east-1
     ports:
-      - "4566:4566"
+      - "${LOCALSTACK_PORT:-4566}:4566"
     volumes:
       - ./deploy/localstack/init:/etc/localstack/init/ready.d:ro
     healthcheck:
@@ -84,11 +90,11 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HTTP_PORT: "8080"
-      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8180}
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HEALTH_ENABLED: "true"
     ports:
-      - "8180:8080"
+      - "${KEYCLOAK_PORT:-8180}:8080"
     volumes:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
     healthcheck:
