@@ -704,4 +704,6 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
   - Limitação: num push de tag, o GitHub usa o `publish.yml` do commit marcado. Quem tem acesso de escrita poderia marcar um branch com o workflow alterado e contornar a exigência de CI verde. A mitigação é uma regra de proteção de tags `v*` no repositório, a configurar junto com a proteção da `main` (ticket #11).
   - O pacote no GHCR nasce privado. Para o avaliador baixar sem login, o pacote precisa ser tornado público uma vez nas configurações do pacote no GitHub (a visibilidade não pode ser alterada pelo `GITHUB_TOKEN`).
 
+- **Dependabot** (`dependabot.yml`): atualização semanal de módulos Go, actions (mantém o par `@<sha> # vX.Y.Z`), imagens do `Dockerfile` e imagens do `docker-compose.yml`, com um PR agrupado por ecossistema (no máximo quatro por semana), prefixo `chore(deps)` e sem merge automático. A imagem `golang` do `Dockerfile` é ignorada de propósito: a versão do Go muda junto com a diretiva `go` do `go.mod`, manualmente. As imagens do harness de integração repetem as versões do Compose; um teste (`TestHarnessImagesMatchCompose`) falha se divergirem, então um PR do Dependabot nas imagens do Compose só passa depois que o harness acompanha.
+
 Os nomes dos jobs são estáveis porque a proteção da `main` os referencia como checks obrigatórios.

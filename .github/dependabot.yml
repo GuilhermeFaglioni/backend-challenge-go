@@ -1,0 +1,54 @@
+# Weekly dependency updates, one grouped PR per ecosystem (at most four a week),
+# never merged automatically: each one goes through the full CI and is merged
+# by hand. The "chore(deps)" prefix keeps the titles valid for the Conventional
+# Commits check (.github/workflows/pr-title.yml).
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  # Keeps the "uses: owner/action@<sha> # vX.Y.Z" pins: it updates the SHA and
+  # the version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Base images of the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      docker-images:
+        patterns: ["*"]
+    ignore:
+      # The Go toolchain is bumped on purpose, together with the `go` directive
+      # in go.mod (the Dockerfile says to keep them in sync).
+      - dependency-name: golang
+
+  # Images run by docker-compose.yml.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      compose-images:
+        patterns: ["*"]
