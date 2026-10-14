@@ -3,9 +3,11 @@
 Serviço em Go que processa operações financeiras de provedores de jogos (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) sobre carteiras de jogadores, com várias instâncias em paralelo e tolerância a falhas.
 
 - Enunciado do desafio: [docs/CHALLENGE.md](docs/CHALLENGE.md)
-- Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md) e os registros curtos em [docs/adr](docs/adr)
+- Ordem de construção e definição de pronto: [docs/ROADMAP.md](docs/ROADMAP.md)
+- Vocabulário do projeto: [CONTEXT.md](CONTEXT.md)
 
-> **Status: scaffold.** A composição Fx, a configuração, os health checks, as métricas e o ambiente Docker estão prontos. Domínio, schema, casos de uso, autenticação, consumidor SQS e workers ainda não foram implementados. Este README será completado conforme cada parte for entregue.
+> **Status: infraestrutura pronta, aplicação por construir.** A composição Fx, a configuração, os health checks, as métricas, o ambiente Docker e todo o CI/CD (testes unitários, de integração e multi-instância, cobertura, publicação da imagem e proteção da `main`) estão prontos. Domínio, schema, casos de uso, autenticação, consumidor SQS e workers seguem o [roadmap](docs/ROADMAP.md) e ainda não foram implementados. Este README será completado conforme cada parte for entregue.
 
 ## Pré-requisitos
 

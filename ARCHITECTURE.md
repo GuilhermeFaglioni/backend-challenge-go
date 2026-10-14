@@ -2,7 +2,7 @@
 
 Decisões técnicas do serviço de processamento distribuído de apostas.
 
-> **Status:** documento de projeto escrito antes da implementação. Tudo aqui descreve o que será construído. Conforme o código for entregue, a seção [Limitações e trabalho não concluído](#17-limitações-interpretações-e-trabalho-não-concluído) deve ser atualizada com o que mudou ou ficou de fora.
+> **Status:** documento de projeto escrito antes da implementação da aplicação (o CI/CD da seção 18 já está em funcionamento). Tudo o mais aqui descreve o que será construído, na ordem de [docs/ROADMAP.md](docs/ROADMAP.md). As três decisões mais difíceis de reverter têm registro próprio em [docs/adr](docs/adr): [aceite síncrono](docs/adr/0001-synchronous-acceptance.md), [lock pessimista por carteira](docs/adr/0002-per-wallet-pessimistic-lock.md) e [dinheiro em `int64`](docs/adr/0003-money-as-int64-minor-units.md); os termos estão em [CONTEXT.md](CONTEXT.md). Conforme o código for entregue, a seção [Limitações e trabalho não concluído](#17-limitações-interpretações-e-trabalho-não-concluído) deve ser atualizada com o que mudou ou ficou de fora.
 
 ## Sumário
 
@@ -642,9 +642,9 @@ Limitações conhecidas:
 - Eventos de saída são at-least-once; consumidores precisam deduplicar por `eventId`.
 - Janela de deduplicação do FIFO (5 minutos) não é usada como garantia.
 
-Fora do escopo por ora (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry, dashboards e testes de carga.
+Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga é o último ticket opcional do [roadmap](docs/ROADMAP.md) (R22); os motivos da escolha estão lá.
 
-Trabalho não concluído: **toda a implementação**, incluindo o `README.md` da solução (o enunciado atual será movido para `docs/CHALLENGE.md`). Este documento antecede o código e deve ser revisado ao final para refletir desvios, resultados de testes e métricas medidas.
+Trabalho não concluído: **a aplicação** (domínio, schema, casos de uso, autenticação, consumidor SQS, workers e endpoints), na ordem de [docs/ROADMAP.md](docs/ROADMAP.md). Este documento antecede o código e deve ser revisado ao final para refletir desvios, resultados de testes e métricas medidas.
 
 ## 18. CI/CD
 
