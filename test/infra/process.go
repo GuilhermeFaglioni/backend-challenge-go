@@ -27,7 +27,7 @@ func BuildBinary(ctx context.Context, outDir string) (string, error) {
 	binary := filepath.Join(outDir, "api")
 	// The output path is a directory the test run created, not external input.
 	cmd := exec.CommandContext(ctx, "go", "build", //nolint:gosec // fixed arguments; only the output path varies
-		"-race", "-cover", "-covermode=atomic", "-coverpkg=./...",
+		"-race", "-cover", "-covermode=atomic", "-coverpkg=./internal/...,./cmd/...",
 		"-tags", "faultinject",
 		"-o", binary, "./cmd/api")
 	cmd.Dir = RepoRoot()

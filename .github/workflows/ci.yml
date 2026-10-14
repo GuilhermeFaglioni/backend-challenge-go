@@ -52,6 +52,7 @@ jobs:
           bash .github/scripts/pr-title_test.sh
           bash .github/scripts/image-tags_test.sh
           bash .github/scripts/nightly-report_test.sh
+          bash .github/scripts/coverage-gate_test.sh
 
       - name: go mod tidy
         # -diff prints what tidy would change and fails without touching files;
@@ -66,6 +67,9 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Binary coverage data, merged with the other layers by the coverage job.
+      COVERDIR: ${{ github.workspace }}/coverage-unit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,8 +80,20 @@ jobs:
 
       # -shuffle=on prints a seed per package ("-test.shuffle <seed>"); rerun a
       # failure locally with -shuffle=<seed>. -v makes passing packages show it too.
+      # -coverpkg measures every application package, not only the one under
+      # test, so code exercised from another package counts.
       - name: go test
-        run: go test -race -count=1 -shuffle=on -v ./...
+        run: |
+          mkdir -p "$COVERDIR"
+          go test -race -count=1 -shuffle=on -v -cover -coverpkg=./internal/...,./cmd/... ./... -args -test.gocoverdir="$COVERDIR"
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-unit
+          path: coverage-unit
+          retention-days: 3
+          if-no-files-found: error
 
       # Fault points exist only in this build; their behaviour must be tested too.
       - name: go test (faultinject build)
@@ -193,6 +209,7 @@ jobs:
     env:
       # On failure the test harness writes each container's log here.
       INTEGRATION_LOG_DIR: ${{ github.workspace }}/integration-logs
+      COVERDIR: ${{ github.workspace }}/coverage-integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,7 +223,17 @@ jobs:
       # unit tests run again here, which costs seconds. -timeout is just above
       # the harness watchdog (12m), so a hung run still saves the container logs.
       - name: go test (integration)
-        run: go test -tags integration -race -count=1 -shuffle=on -timeout 14m -v ./...
+        run: |
+          mkdir -p "$COVERDIR"
+          go test -tags integration -race -count=1 -shuffle=on -timeout 14m -v -cover -coverpkg=./internal/...,./cmd/... ./... -args -test.gocoverdir="$COVERDIR"
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-integration
+          path: coverage-integration
+          retention-days: 3
+          if-no-files-found: error
 
       # cancelled() too: the job timeout cancels the job, and failure() is false then.
       - name: Upload container logs
@@ -241,6 +268,14 @@ jobs:
       - name: go test (multi-instance)
         run: go test -tags multiinstance -race -count=1 -shuffle=on -timeout 14m -v ./test/multiinstance/
 
+      - name: Upload coverage data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-multiinstance
+          path: coverage-multiinstance
+          retention-days: 3
+          if-no-files-found: error
+
       # cancelled() too: the job timeout cancels the job, and failure() is false then.
       - name: Upload container and instance logs
         if: failure() || cancelled()
@@ -250,3 +285,31 @@ jobs:
           path: integration-logs
           retention-days: 7
           if-no-files-found: ignore
+
+  coverage:
+    name: Coverage
+    # Only when every layer passed: a partial report would mislead.
+    needs: [unit, integration, multi-instance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # One folder per layer under coverage/ (coverage/coverage-unit, ...).
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          path: coverage
+
+      # Merges the layers, writes the report to the run summary and fails when a
+      # package under internal/domain is below 90%.
+      - name: Merge and gate
+        env:
+          COVER_DIRS: coverage/coverage-unit coverage/coverage-integration coverage/coverage-multiinstance
+          THRESHOLD: "90"
+        run: bash .github/scripts/coverage-report.sh

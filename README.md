@@ -160,6 +160,17 @@ go test -race ./...
 go vet ./...
 ```
 
+### Cobertura
+
+O CI combina a cobertura dos testes unitários, de integração e dos processos da camada multi-instância num único relatório (na página do run, aba Summary) e exige 90% em cada pacote de `internal/domain/`. Para gerar localmente um relatório de uma camada:
+
+```bash
+mkdir -p /tmp/cover-unit && go test -cover -coverpkg=./internal/...,./cmd/... ./... -args -test.gocoverdir=/tmp/cover-unit
+THRESHOLD=0 COVER_DIRS=/tmp/cover-unit bash .github/scripts/coverage-report.sh
+```
+
+`THRESHOLD=0` desliga o gate: com os dados de uma única camada, o domínio quase sempre fica abaixo de 90%, porque as outras camadas ainda não contribuíram.
+
 ### Integração (infraestrutura real)
 
 Sobem PostgreSQL, LocalStack (SQS) e Keycloak em containers com `testcontainers-go`, usando as mesmas imagens, migrations, script de filas e realm do `docker compose`. Ficam atrás da build tag `integration`, então `go test ./...` não os executa. Exigem Docker em execução:
