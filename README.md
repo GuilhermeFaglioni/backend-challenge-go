@@ -189,3 +189,13 @@ Cobrem hoje: três instâncias prontas; uma instância morta com `SIGKILL` sem a
 **Pontos de falha** (`internal/platform/faultinject`): um processo sai abruptamente quando seu nome está em `FAULT_POINTS` (lista separada por vírgula). Só existem em binários compilados com `-tags faultinject`; sem a tag, `Hit` não faz nada e a variável é ignorada (o binário de produção nem contém o código). Para criar um ponto, declare a constante em `points.go`, registre-a em `faultinject_on.go` e chame `faultinject.Hit(...)` onde o processo deve cair.
 
 Em caso de falha, os logs de cada instância e de cada container vão para `INTEGRATION_LOG_DIR`. Os dados de cobertura dos processos vão para `MULTIINSTANCE_COVERDIR`.
+
+### Execução noturna
+
+O workflow `Nightly` repete as camadas de integração e multi-instância contra a `main` toda noite com `-count=5`. Uma falha abre (ou atualiza) uma issue com o label `nightly-failure`, citando a camada, o link do run e a seed do `-shuffle`. O `go test` sorteia uma seed por execução, então as 5 repetições de uma noite compartilham a mesma ordem; cada noite traz uma ordem nova. Para reproduzir localmente:
+
+```bash
+go test -tags multiinstance -race -count=5 -shuffle=<seed> ./test/multiinstance/
+```
+
+Também pode ser disparado à mão na aba Actions (`count` e `simulate_failure`).
