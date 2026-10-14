@@ -23,6 +23,7 @@ Decisões técnicas do serviço de processamento distribuído de apostas.
 15. [Observabilidade](#15-observabilidade)
 16. [Estratégia de testes](#16-estratégia-de-testes)
 17. [Limitações, interpretações e trabalho não concluído](#17-limitações-interpretações-e-trabalho-não-concluído)
+18. [CI/CD](#18-cicd)
 
 ---
 
@@ -644,3 +645,44 @@ Limitações conhecidas:
 Fora do escopo por ora (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry, dashboards e testes de carga.
 
 Trabalho não concluído: **toda a implementação**, incluindo o `README.md` da solução (o enunciado atual será movido para `docs/CHALLENGE.md`). Este documento antecede o código e deve ser revisado ao final para refletir desvios, resultados de testes e métricas medidas.
+
+## 18. CI/CD
+
+Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, então os minutos são ilimitados. O trabalho é dividido em tickets rastreados nas issues com o label `ci`.
+
+### Decisões
+
+| # | Tema | Decisão |
+| --- | --- | --- |
+| 1 | Escopo | CI em todo PR; no merge para a `main`, imagem publicada no GHCR. Sem ambiente hospedado: o avaliador reproduz tudo com `docker compose up --build`. |
+| 2 | Testes no PR | Unitários, integração e multi-instância com falhas, todos em todo PR, em jobs paralelos. As garantias da camada 3 são as eliminatórias do desafio, então uma regressão não pode esperar o merge. |
+| 3 | Análise estática | `gofmt`, `go vet`, checagem do `go mod tidy`, `golangci-lint` com lista curada (`errcheck`, `errorlint`, `staticcheck`, `unused`, `ineffassign`, `noctx`, `rowserrcheck`, `sqlclosecheck`, `bodyclose`, `gosec`) e `govulncheck`. |
+| 4 | Proteção da `main` | Sem push direto; merge só com todos os checks verdes; sem revisor obrigatório (mantenedor único); a regra vale para administradores. |
+| 5 | Merge | Só squash, histórico linear, títulos de PR em Conventional Commits (`feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, `build`). |
+| 6 | Título do PR | Validado por script no próprio workflow, sem action de terceiros. O título é texto controlado por quem abre o PR, então chega ao script só por variável de ambiente, nunca interpolado no shell. |
+| 7 | Actions | Fixadas pelo SHA completo do commit, com a versão em comentário. Permissão padrão `contents: read`; só o job de publicação tem `packages: write`. |
+| 8 | Dependências | Dependabot semanal para módulos Go, actions e imagens Docker, agrupado por ecossistema, prefixo `chore(deps):`, sem merge automático. |
+| 9 | Tags da imagem | `sha-<curto>` e `latest` a cada merge na `main`; tag git `vX.Y.Z` publica também `X.Y.Z` e `X.Y`. |
+| 10 | Arquiteturas | `linux/amd64` e `linux/arm64` em um manifesto, por compilação cruzada no Dockerfile. |
+| 11 | Camada 3 e smoke | Os cenários de falha usam o binário (`faultinject`) executado como três processos controlados pelo teste. Um job de smoke separado sobe o Compose completo com a imagem do PR. |
+| 12 | Cobertura | Soma de unitários, integração e processos da camada 3 no resumo do job; o PR falha se `internal/domain/...` ficar abaixo de 90%. Sem limite nos demais pacotes. |
+| 13 | Instabilidade | Sem repetição automática: uma falha intermitente em teste de concorrência é tratada como possível corrida. `-count=1` e `-shuffle=on` nos PRs; execução noturna das camadas 2 e 3 com `-count=5` contra a `main`, que abre issue se falhar. |
+| 14 | Diagnóstico | Em falha, guarda por 7 dias os logs de cada processo e container e a seed do `-shuffle`. Os artefatos de um repositório público são baixáveis por qualquer pessoa: a regra da seção 15 (nada de tokens nem payloads financeiros nos logs) vale também aqui. |
+| 15 | Operacional | Go lido do `go.mod` (`go-version-file`); cache de módulos, build e camadas Docker; novo push em um PR cancela a execução anterior (na `main` e em tags nada é cancelado); timeout por job; PR atualizado com a `main` antes do merge; publicação só depois do CI verde. |
+
+### Workflows
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `ci.yml` | PRs e push na `main`: formatação, vet, módulos, testes e demais checks. |
+| `publish.yml` | Publicação da imagem no GHCR após o CI verde na `main` e em tags `v*`. |
+| `nightly.yml` | Execução agendada das camadas 2 e 3 com `-count=5`. |
+| `dependabot.yml` | Atualização semanal de dependências. |
+| `.golangci.yml` (raiz) | Configuração do `golangci-lint` com a lista curada de linters. |
+
+### Checks do `ci.yml`
+
+- **Format, vet and modules:** falha se algum arquivo não estiver formatado pelo `gofmt` (lista os arquivos), se o `go vet` reclamar ou se `go mod tidy -diff` apontar qualquer alteração em `go.mod` ou `go.sum` (inclusive um `go.sum` ausente).
+- **Unit tests:** `go test -race -count=1 -shuffle=on -v ./...`. O `-shuffle=on` imprime uma seed por pacote (`-test.shuffle <seed>`); uma falha é reproduzida localmente com `-shuffle=<seed>`.
+
+Os nomes dos jobs são estáveis porque a proteção da `main` os referencia como checks obrigatórios.
