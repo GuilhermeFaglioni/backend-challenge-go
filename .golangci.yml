@@ -1,5 +1,10 @@
 version: "2"
 
+run:
+  # Lint the integration test code too, not only the default build.
+  build-tags:
+    - integration
+
 # Curated on purpose: every linter below targets a risk this project is graded
 # on (ARCHITECTURE.md, section 18). Enabling everything would bury those in noise.
 linters:
