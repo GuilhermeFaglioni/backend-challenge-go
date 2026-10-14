@@ -16,6 +16,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
 
@@ -48,6 +49,7 @@ func NewServer(p ServerParams) *http.Server {
 
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			faultinject.Hit(faultinject.HTTPBeforeListen)
 			// Listen synchronously so a busy port fails the startup instead of
 			// a background goroutine.
 			var lc net.ListenConfig
@@ -55,6 +57,7 @@ func NewServer(p ServerParams) *http.Server {
 			if err != nil {
 				return err
 			}
+			faultinject.Hit(faultinject.HTTPAfterListen)
 			go func() {
 				if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					p.Logger.Error("http server failed", slog.Any("error", err))

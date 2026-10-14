@@ -176,4 +176,16 @@ Se um teste falhar, os logs dos containers são gravados em `INTEGRATION_LOG_DIR
 INTEGRATION_LOG_DIR=/tmp/integration-logs go test -tags integration ./test/...
 ```
 
-Os testes de múltiplas instâncias e de injeção de falhas serão documentados aqui quando forem implementados.
+### Múltiplas instâncias e injeção de falhas
+
+Executam o binário da aplicação como **processos separados do sistema operacional** (três ou mais, cada um com suas conexões e memória) contra PostgreSQL e LocalStack reais. O binário é compilado pelo próprio teste com `-race`, instrumentação de cobertura e a build tag `faultinject`, que habilita os pontos de falha. Ficam atrás da build tag `multiinstance` e exigem Docker e uma toolchain Go com cgo (por causa do `-race`):
+
+```bash
+go test -tags multiinstance -race -count=1 -shuffle=on ./test/multiinstance/
+```
+
+Cobrem hoje: três instâncias prontas; uma instância morta com `SIGKILL` sem afetar as outras e voltando no mesmo endereço; `SIGTERM` encerrando limpo (servidor antes do pool) e gravando cobertura; um ponto de falha derrubando o processo com o código `77`; e a recusa de iniciar com um nome de ponto de falha inexistente. Qualquer corrida de dados relatada por um processo reprova o teste.
+
+**Pontos de falha** (`internal/platform/faultinject`): um processo sai abruptamente quando seu nome está em `FAULT_POINTS` (lista separada por vírgula). Só existem em binários compilados com `-tags faultinject`; sem a tag, `Hit` não faz nada e a variável é ignorada (o binário de produção nem contém o código). Para criar um ponto, declare a constante em `points.go`, registre-a em `faultinject_on.go` e chame `faultinject.Hit(...)` onde o processo deve cair.
+
+Em caso de falha, os logs de cada instância e de cada container vão para `INTEGRATION_LOG_DIR`. Os dados de cobertura dos processos vão para `MULTIINSTANCE_COVERDIR`.
