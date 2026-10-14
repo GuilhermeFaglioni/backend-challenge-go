@@ -94,6 +94,11 @@ func lifetime(t *testing.T) context.Context {
 
 var unsafeInFileName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+// instanceSeq makes every started instance's log file unique. t.Name() repeats
+// across -count iterations, and a later passing iteration must not overwrite
+// the log of an earlier failing one.
+var instanceSeq atomic.Int64
+
 // track registers what must happen to an instance when the test ends: it is
 // stopped, and the test fails if the process reported a data race.
 func track(t *testing.T, instance *infra.Instance) {
@@ -119,7 +124,7 @@ func startInstance(t *testing.T, name, addr string, db infra.Database, extra map
 	t.Helper()
 	instance, err := infra.StartInstance(lifetime(t), binary, infra.InstanceConfig{
 		Name:    name,
-		LogName: unsafeInFileName.ReplaceAllString(t.Name(), "_") + "-" + name,
+		LogName: unsafeInFileName.ReplaceAllString(t.Name(), "_") + "-" + name + "-" + strconv.FormatInt(instanceSeq.Add(1), 10),
 		Addr:    addr,
 		Env:     environment(name, addr, db, extra),
 	})

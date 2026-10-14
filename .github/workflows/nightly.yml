@@ -1,7 +1,9 @@
 name: Nightly
 
 # Runs the integration and multi-instance layers against main many times, to
-# surface rare concurrency failures a single PR run can miss. Tests are never
+# surface rare concurrency failures a single PR run can miss. Note: go test with
+# -shuffle=on picks one seed per run, so the -count repetitions of a night share
+# one order; a different order comes with each night's new seed. Tests are never
 # retried: an intermittent failure in a concurrency test is treated as a
 # possible race, not as noise. A failure opens an issue (or comments on the one
 # still open).
@@ -30,7 +32,7 @@ jobs:
   integration:
     name: Integration (nightly)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     outputs:
       seed: ${{ steps.seed.outputs.value }}
     env:
@@ -54,7 +56,7 @@ jobs:
       # shell: bash so a failing `go test` fails the step despite the pipe to tee.
       - name: go test (integration, repeated)
         shell: bash
-        run: go test -tags integration -race -count="$COUNT" -shuffle=on -timeout 50m -v ./test/integration/ 2>&1 | tee test-output.txt
+        run: go test -tags integration -race -count="$COUNT" -shuffle=on -timeout 14m -v ./test/integration/ 2>&1 | tee test-output.txt
 
       - name: Simulated failure
         if: env.SIMULATE_FAILURE == 'true'
@@ -81,12 +83,11 @@ jobs:
   multi-instance:
     name: Multi-instance (nightly)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     outputs:
       seed: ${{ steps.seed.outputs.value }}
     env:
       INTEGRATION_LOG_DIR: ${{ github.workspace }}/integration-logs
-      MULTIINSTANCE_COVERDIR: ${{ github.workspace }}/coverage-multiinstance
       COUNT: ${{ inputs.count || '5' }}
       SIMULATE_FAILURE: ${{ inputs.simulate_failure || 'false' }}
     steps:
@@ -103,7 +104,7 @@ jobs:
 
       - name: go test (multi-instance, repeated)
         shell: bash
-        run: go test -tags multiinstance -race -count="$COUNT" -shuffle=on -timeout 50m -v ./test/multiinstance/ 2>&1 | tee test-output.txt
+        run: go test -tags multiinstance -race -count="$COUNT" -shuffle=on -timeout 14m -v ./test/multiinstance/ 2>&1 | tee test-output.txt
 
       - name: Simulated failure
         if: env.SIMULATE_FAILURE == 'true'

@@ -67,7 +67,9 @@ expect_no_call "no failure means no call at all" "^gh "
 # and the seed.
 report "" failure success 1791996195940080000 ""
 expect_call "opens an issue" "^gh issue create"
+expect_call "looks only at open issues of the nightly label" "^gh issue list .*--label nightly-failure.*--state open|^gh issue list .*--state open.*--label nightly-failure"
 expect_call "labels it" "--label nightly-failure"
+expect_call "puts the date and the layer in the title" "--title Nightly failed \([0-9]{4}-[0-9]{2}-[0-9]{2}\): Integration( |$)"
 expect_call "names the failing layer" "Integration"
 expect_call "links the run" "https://github.com/o/r/actions/runs/42"
 expect_call "states the shuffle seed" "1791996195940080000"
@@ -76,16 +78,17 @@ expect_no_call "does not comment when none is open" "^gh issue comment"
 
 # The next failure while that issue is still open comments instead of opening a
 # duplicate.
-report "17" success failure "" 42
+report "17" success failure "" 987654321
 expect_call "comments on the open issue" "^gh issue comment 17"
 expect_call "names the failing layer in the comment" "Multi-instance"
-expect_call "states the seed in the comment" "42"
+expect_call "states the seed in the comment" "shuffle seed: 987654321"
 expect_no_call "does not open a duplicate" "^gh issue create"
 
 # Both layers failing are both reported, in one issue.
 report "" failure failure 1 2
 expect_call "names the first layer" "Integration"
 expect_call "names the second layer" "Multi-instance"
+expect_call "lists both layers in the title" "--title Nightly failed \([0-9-]+\): Integration, Multi-instance"
 [ "$(grep -c '^gh issue create' "$work/calls")" -eq 1 ] || { echo "FAIL: both layers must share one issue"; failures=$((failures + 1)); }
 
 # A missing seed is said so rather than printed as an empty value.

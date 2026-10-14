@@ -192,7 +192,7 @@ Em caso de falha, os logs de cada instância e de cada container vão para `INTE
 
 ### Execução noturna
 
-O workflow `Nightly` repete as camadas de integração e multi-instância contra a `main` toda noite com `-count=5`. Uma falha abre (ou atualiza) uma issue com o label `nightly-failure`, citando a camada, o link do run e a seed do `-shuffle`. Para reproduzir localmente:
+O workflow `Nightly` repete as camadas de integração e multi-instância contra a `main` toda noite com `-count=5`. Uma falha abre (ou atualiza) uma issue com o label `nightly-failure`, citando a camada, o link do run e a seed do `-shuffle`. O `go test` sorteia uma seed por execução, então as 5 repetições de uma noite compartilham a mesma ordem; cada noite traz uma ordem nova. Para reproduzir localmente:
 
 ```bash
 go test -tags multiinstance -race -count=5 -shuffle=<seed> ./test/multiinstance/
