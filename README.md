@@ -201,6 +201,18 @@ Cobrem hoje: três instâncias prontas; uma instância morta com `SIGKILL` sem a
 
 Em caso de falha, os logs de cada instância e de cada container vão para `INTEGRATION_LOG_DIR`. Os dados de cobertura dos processos vão para `MULTIINSTANCE_COVERDIR`.
 
+### Proteção da `main`
+
+As regras do repositório (PR obrigatório, checks exigidos, somente squash, tags `v*` restritas) estão em [.github/rulesets](.github/rulesets). Para ver o que seria aplicado, sem alterar nada, e para aplicar (exige ser administrador do repositório):
+
+```bash
+bash .github/scripts/apply-rulesets.sh
+```
+
+```bash
+bash .github/scripts/apply-rulesets.sh --apply
+```
+
 ### Execução noturna
 
 O workflow `Nightly` repete as camadas de integração e multi-instância contra a `main` toda noite com `-count=5`. Uma falha abre (ou atualiza) uma issue com o label `nightly-failure`, citando a camada, o link do run e a seed do `-shuffle`. O `go test` sorteia uma seed por execução, então as 5 repetições de uma noite compartilham a mesma ordem; cada noite traz uma ordem nova. Para reproduzir localmente:
