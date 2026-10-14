@@ -92,10 +92,12 @@ Princípios que guiam as decisões:
 | Métricas | `prometheus/client_golang` | Contadores, histogramas e gauges em `/metrics`. |
 | Configuração | Variáveis de ambiente (`caarlos0/env`) | Validada no boot; `.env.example` versionado. |
 | Testes | `testing`, `testify`, `testcontainers-go` | Infraestrutura real (Postgres, Keycloak, LocalStack). |
+| Documentação da API | OpenAPI 3.1 escrito à mão, Swagger UI, `kin-openapi` | Contrato definido antes dos handlers e validado por teste. Ver [seção 11](#11-contrato-http-códigos-e-failurecode). |
 
 ## 3. Estrutura de pacotes
 
 ```
+api/openapi.yaml           contrato HTTP (OpenAPI 3.1), embutido no binário
 cmd/api/main.go            só fx.New(...).Run()
 internal/
   domain/                  puro: sem Fx, HTTP, SQS nem pgx
@@ -459,6 +461,26 @@ Detalhes:
 
 Erros de formato (`400`) não são persistidos: a operação não chega a existir, e o provedor pode reenviar corrigida com a mesma chave.
 
+### Documentação da API (OpenAPI)
+
+**Especificação escrita antes dos handlers.** O contrato fica em `api/openapi.yaml`, em OpenAPI 3.1, escrito à mão. Ele é a fonte da verdade do contrato HTTP e cobre:
+
+- todos os endpoints, com exemplos derivados do enunciado;
+- os códigos e corpos de resposta desta seção, com `oneOf` onde a resposta varia (processada, pendente, rejeitada);
+- o catálogo de `failureCode` como `enum`;
+- o formato de `Money`, com `amount` como string e o padrão `^(0|[1-9][0-9]*)\.[0-9]{2}$`;
+- o header `Idempotency-Key` como obrigatório;
+- o esquema de segurança OAuth 2.0 `clientCredentials`, apontando para o token endpoint do Keycloak, e os papéis exigidos por endpoint.
+
+**Validação por teste de contrato.** Os testes de integração da API usam `kin-openapi` para validar cada requisição e resposta reais contra o `openapi.yaml`. Um handler que devolva status, campo ou formato fora do contrato faz o teste falhar, o que impede a documentação de divergir do comportamento.
+
+**Publicação.** O binário embute o arquivo (`embed`) e o serve em `GET /openapi.yaml`, rota pública como os health checks. O Docker Compose sobe um serviço Swagger UI (imagem oficial) que carrega esse arquivo; pelo botão "Authorize" é possível obter um token no Keycloak via `client_credentials` e chamar os endpoints autenticados.
+
+**Alternativas descartadas:**
+
+- `swaggo/swag` (anotações em comentários): gera Swagger 2.0, que não tem `oneOf`, e os comentários não são validados contra o comportamento real.
+- `oapi-codegen` (código gerado a partir da especificação): os tipos e interfaces gerados tendem a vazar para fora do adapter HTTP, e o domínio precisa ficar independente de HTTP. Com poucos handlers, o teste de contrato dá a mesma garantia sem código gerado.
+
 ## 12. Inbox, SQS e outbox
 
 ### Entrada por SQS
@@ -547,6 +569,7 @@ Envelope:
 | `GET /providers/:pid/wagering/transactions/:ext` | `provider` ou `internal` | `:pid` precisa igualar a claim para provedores; `403` caso contrário |
 | `POST /wallets`, `GET /wallets/:id`, `GET /wallets/:id/ledger`, `POST /wallets/:id/reconciliation` | `internal` | operações de carteira restritas ao serviço interno |
 | `GET /health/live`, `GET /health/ready` | público | |
+| `GET /openapi.yaml` | público | só o contrato; não expõe dados |
 | `/metrics` | público na rede interna do Compose | ver limitações |
 
 A autorização acontece **antes** de qualquer efeito: um acesso negado não grava transação, não toca a carteira e não expõe dados. O isolamento vale também para replays (a busca por chave de idempotência filtra por `provider_id`).
@@ -593,6 +616,7 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
 - **Três processos independentes:** os cenários multi-instância usam o binário da aplicação executado como três processos do sistema operacional (réplicas do Compose, ou processos iniciados pelo próprio teste), cada um com seu pool de conexões e sua memória. Instâncias Fx dentro do processo de teste não contam como independentes.
 - **Injeção de falhas:** pontos de falha nomeados no código (por exemplo `after_commit_before_ack`, `after_publish_before_mark`, `after_pending_commit`), compilados só com a build tag `faultinject` e ativados por variável de ambiente. Quando ativado, o ponto encerra o processo com `os.Exit`, simulando um crash abrupto. Os testes de recuperação sobem um processo com o ponto ativo, esperam o crash e verificam que outra instância conclui o trabalho.
 - **Duplicidade exercitando a aplicação:** nos testes de reenvio pelo SQS, cada cópia da mensagem é enviada com um `MessageDeduplicationId` diferente, para que a deduplicação do FIFO não descarte as cópias. Assim o teste prova que a inbox e a idempotência barram a duplicata, e as métricas de duplicata confirmam os recebimentos repetidos.
+- **Contrato HTTP:** toda requisição e resposta dos testes de integração da API é validada contra `api/openapi.yaml` com `kin-openapi` (seção 11).
 - **Autorização:** credenciais ausentes, inválidas e expiradas; isolamento entre provedores (consultas e replays); ausência de efeito financeiro em acessos negados.
 - Execução com `go test -race` onde aplicável.
 
