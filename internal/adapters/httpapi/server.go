@@ -50,7 +50,8 @@ func NewServer(p ServerParams) *http.Server {
 		OnStart: func(ctx context.Context) error {
 			// Listen synchronously so a busy port fails the startup instead of
 			// a background goroutine.
-			ln, err := net.Listen("tcp", srv.Addr)
+			var lc net.ListenConfig
+			ln, err := lc.Listen(ctx, "tcp", srv.Addr)
 			if err != nil {
 				return err
 			}
