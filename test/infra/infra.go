@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || multiinstance
 
 // Package infra starts the real infrastructure the integration tests run
 // against: PostgreSQL, LocalStack (SQS) and Keycloak, in containers. Nothing
@@ -332,7 +332,7 @@ func DumpLogs(ctx context.Context, dir, name string, c testcontainers.Container)
 	if dir == "" || c == nil {
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // directory chosen by the CI environment, not by input
 		return err
 	}
 	logs, err := c.Logs(ctx)
