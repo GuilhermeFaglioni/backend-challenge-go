@@ -39,8 +39,12 @@ jobs:
             exit 1
           fi
 
+      # Twice: the integration tests are behind a build tag and invisible to
+      # a plain vet.
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
 
       - name: Script self-tests
         run: |
@@ -175,3 +179,35 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose down -v
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # On failure the test harness writes each container's log here.
+      INTEGRATION_LOG_DIR: ${{ github.workspace }}/integration-logs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Real PostgreSQL, LocalStack and Keycloak in containers (testcontainers).
+      # ./... so an integration test added to any package is picked up; the
+      # unit tests run again here, which costs seconds. -timeout is just above
+      # the harness watchdog (12m), so a hung run still saves the container logs.
+      - name: go test (integration)
+        run: go test -tags integration -race -count=1 -shuffle=on -timeout 14m -v ./...
+
+      # cancelled() too: the job timeout cancels the job, and failure() is false then.
+      - name: Upload container logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-logs
+          path: integration-logs
+          retention-days: 7
+          if-no-files-found: ignore

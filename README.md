@@ -146,6 +146,8 @@ A validação dos tokens na API ainda não foi implementada.
 
 ## Testes
 
+Testes unitários (rápidos, sem Docker):
+
 ```bash
 go test ./...
 ```
@@ -158,4 +160,20 @@ go test -race ./...
 go vet ./...
 ```
 
-Os testes de integração (build tag `integration`), de múltiplas instâncias e de injeção de falhas serão documentados aqui quando forem implementados.
+### Integração (infraestrutura real)
+
+Sobem PostgreSQL, LocalStack (SQS) e Keycloak em containers com `testcontainers-go`, usando as mesmas imagens, migrations, script de filas e realm do `docker compose`. Ficam atrás da build tag `integration`, então `go test ./...` não os executa. Exigem Docker em execução:
+
+```bash
+go test -tags integration -race -count=1 -shuffle=on ./test/...
+```
+
+O que cobrem hoje: migrations (aplicar, reverter e reaplicar), privilégios do papel `wagering_app`, início e encerramento da composição Fx contra a infraestrutura real (ordem de shutdown e ausência de goroutines remanescentes), readiness acompanhando Postgres e SQS, e o provisionamento do Keycloak e das filas.
+
+Se um teste falhar, os logs dos containers são gravados em `INTEGRATION_LOG_DIR` (o CI os publica como artefato por 7 dias):
+
+```bash
+INTEGRATION_LOG_DIR=/tmp/integration-logs go test -tags integration ./test/...
+```
+
+Os testes de múltiplas instâncias e de injeção de falhas serão documentados aqui quando forem implementados.

@@ -683,8 +683,9 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 
 ### Checks do `ci.yml`
 
-- **Format, vet and modules:** falha se algum arquivo não estiver formatado pelo `gofmt` (lista os arquivos), se o `go vet` reclamar ou se `go mod tidy -diff` apontar qualquer alteração em `go.mod` ou `go.sum` (inclusive um `go.sum` ausente).
+- **Format, vet and modules:** falha se algum arquivo não estiver formatado pelo `gofmt` (lista os arquivos), se o `go vet` reclamar (também com `-tags integration`, que os testes de integração exigem) ou se `go mod tidy -diff` apontar qualquer alteração em `go.mod` ou `go.sum` (inclusive um `go.sum` ausente).
 - **Script self-tests:** `pr-title_test.sh` e `image-tags_test.sh`, os testes dos scripts que decidem o título do PR e as tags da imagem.
+- **Integration tests:** `go test -tags integration -race -count=1 -shuffle=on -v ./test/...`. O harness (`test/infra`) sobe PostgreSQL, LocalStack e Keycloak reais em containers (`testcontainers-go`) com as mesmas imagens, migrations, script de filas e realm do Compose; os containers são compartilhados pelo pacote e cada teste usa um banco próprio. O teste de readiness sobe e para containers próprios para nunca afetar os compartilhados. A composição Fx é iniciada e encerrada contra essa infraestrutura, conferindo a ordem do shutdown e, com `goleak`, que nada sobrevive ao `Stop`. Em falha, os logs dos containers são guardados por 7 dias.
 - **Unit tests:** `go test -race -count=1 -shuffle=on -v ./...`. O `-shuffle=on` imprime uma seed por pacote (`-test.shuffle <seed>`); uma falha é reproduzida localmente com `-shuffle=<seed>`.
 
 - **Lint:** `golangci-lint` v2 com a lista curada de `.golangci.yml`, cada linter ligado a um risco do projeto (erros tratados com `errors.Is/As`, I/O com `context`, corpo de resposta e linhas de banco fechados, segurança). `rowserrcheck` e `sqlclosecheck` entendem `database/sql`, não `pgx`; os usos de `pgx` são cobertos por revisão e pelos testes de integração.
