@@ -53,6 +53,7 @@ jobs:
           bash .github/scripts/image-tags_test.sh
           bash .github/scripts/nightly-report_test.sh
           bash .github/scripts/coverage-gate_test.sh
+          bash .github/scripts/apply-rulesets_test.sh
 
       - name: go mod tidy
         # -diff prints what tidy would change and fails without touching files;
