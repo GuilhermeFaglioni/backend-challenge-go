@@ -78,7 +78,7 @@ Princípios que guiam as decisões:
 
 | Responsabilidade | Escolha | Papel / justificativa |
 | --- | --- | --- |
-| Linguagem | Go (última versão estável no início da implementação) | A mesma versão fica declarada em `go.mod` e na imagem de build do Dockerfile. |
+| Linguagem | Go 1.27.2 | A mesma versão fica declarada em `go.mod` e na imagem de build do Dockerfile. |
 | Composição | Uber Fx | Injeção por construtores e ciclo de vida (`fx.Lifecycle`). Ver [seção 14](#14-uber-fx-ciclo-de-vida-e-shutdown). |
 | HTTP | `net/http` (`ServeMux` com método e path params) | Suficiente para os endpoints; evita dependência extra. |
 | Banco | PostgreSQL 16 | Constraints, triggers, `FOR UPDATE`, `SKIP LOCKED`, `REPEATABLE READ`. |
@@ -106,12 +106,13 @@ internal/
   application/             casos de uso e portas (interfaces)
     openwallet/ processwager/ resolvepending/ reconcile/
   adapters/
-    httpapi/ sqsconsumer/ sqspublisher/ postgres/ outbox/ pendingref/ auth/
+    httpapi/ postgres/ sqsclient/ sqsconsumer/ sqspublisher/ outbox/ pendingref/ auth/
   platform/                config, logger, métricas, health
-  app/                     fx.Module de cada área e composição
-migrations/                NNN_nome.up.sql / .down.sql
-deploy/                    docker-compose, realm Keycloak, init do LocalStack
+  app/                     composição de todos os fx.Module
+migrations/                NNNNNN_nome.up.sql / .down.sql
+deploy/                    init do Postgres (papéis), realm do Keycloak, init do LocalStack
 test/                      integração e2e (build tag `integration`)
+docker-compose.yml         Postgres, migrate, LocalStack, Keycloak e 3 instâncias da app
 docs/CHALLENGE.md          enunciado original do desafio
 README.md                  instruções de execução da solução
 ```
@@ -217,7 +218,9 @@ Constraints:
 
 ### Migrations
 
-Arquivos versionados em `migrations/` (`NNN_nome.up.sql` e `NNN_nome.down.sql`). Aplicação e reversão são documentadas no `README.md` (`migrate up`, `migrate down N`). Em Compose, as migrations rodam em um serviço one-shot antes das instâncias da aplicação subirem.
+Arquivos versionados em `migrations/` (`NNNNNN_nome.up.sql` e `NNNNNN_nome.down.sql`).
+
+Papéis de banco: `wagering_owner` é dono do schema e executa as migrations; a aplicação conecta como `wagering_app`, que só recebe os privilégios concedidos pelas migrations. É isso que permite negar `UPDATE`, `DELETE` e `TRUNCATE` no ledger para a aplicação. Aplicação e reversão são documentadas no `README.md` (`migrate up`, `migrate down N`). Em Compose, as migrations rodam em um serviço one-shot antes das instâncias da aplicação subirem.
 
 ## 6. Transações SQL e acesso ao banco
 

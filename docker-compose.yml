@@ -1,0 +1,131 @@
+name: wagering
+
+# Three identical application instances share one PostgreSQL, one set of SQS
+# queues and one Keycloak realm (ARCHITECTURE.md §1). Each instance is a
+# separate process with its own connections and memory.
+x-app: &app
+  build: .
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    localstack:
+      condition: service_healthy
+    keycloak:
+      condition: service_healthy
+  environment: &app-env
+    HTTP_ADDR: ":8080"
+    LOG_LEVEL: info
+    SHUTDOWN_TIMEOUT: 30s
+    DATABASE_URL: postgres://wagering_app:app_local_pw@postgres:5432/wagering?sslmode=disable
+    DATABASE_MAX_CONNS: "10"
+    AWS_REGION: us-east-1
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    SQS_INPUT_QUEUE: wager-transactions.fifo
+    SQS_EVENTS_QUEUE: wager-events.fifo
+    # Tokens carry the host-facing issuer; the metadata and keys are fetched
+    # from inside the Docker network.
+    OIDC_ISSUER_URL: http://localhost:8180/realms/wagering
+    OIDC_DISCOVERY_URL: http://keycloak:8080/realms/wagering
+    OIDC_AUDIENCE: wallet-api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wagering_owner
+      POSTGRES_PASSWORD: owner_local_pw
+      POSTGRES_DB: wagering
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering_owner -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://wagering_owner:owner_local_pw@postgres:5432/wagering?sslmode=disable
+      - up
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  localstack:
+    image: localstack/localstack:3.8.1
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./deploy/localstack/init:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # Ready once the init script has created the last queue.
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events.fifo"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The image has no curl; query the management port with bash.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  app-1:
+    <<: *app
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-1
+    ports:
+      - "8081:8080"
+
+  app-2:
+    <<: *app
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-2
+    ports:
+      - "8082:8080"
+
+  app-3:
+    <<: *app
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-3
+    ports:
+      - "8083:8080"
+
+volumes:
+  postgres-data:
