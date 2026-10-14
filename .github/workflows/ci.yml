@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege by default; a job that needs more declares it itself.
+permissions:
+  contents: read
+
+# A new push to a PR cancels the run in progress. Runs on main are never
+# cancelled, so a later merge cannot interrupt the validation of an earlier one.
+# Outside PRs the group is per commit: with a shared group GitHub would still
+# drop a *pending* run when a newer one queues behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static:
+    name: Format, vet and modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted (run 'gofmt -w .'):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy
+        # -diff prints what tidy would change and fails without touching files;
+        # unlike git diff it also catches a go.sum that is missing altogether.
+        run: |
+          if ! go mod tidy -diff; then
+            echo "go.mod/go.sum are not tidy (run 'go mod tidy' and commit the result)."
+            exit 1
+          fi
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # -shuffle=on prints a seed per package ("-test.shuffle <seed>"); rerun a
+      # failure locally with -shuffle=<seed>. -v makes passing packages show it too.
+      - name: go test
+        run: go test -race -count=1 -shuffle=on -v ./...
