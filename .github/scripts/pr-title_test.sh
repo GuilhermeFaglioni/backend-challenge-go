@@ -24,6 +24,10 @@ expect accept "fix!: reject negative amounts"
 expect accept "fix(money)!: handle overflow on negate"
 expect accept "docs: record API documentation decision"
 expect accept "chore(deps): bump the go-modules group"
+# Titles Dependabot generates for grouped and single updates.
+expect accept "chore(deps): bump the go-modules group across 1 directory with 3 updates"
+expect accept "chore(deps): bump the github-actions group with 2 updates"
+expect accept "chore(deps): bump actions/checkout from 7.0.0 to 7.0.1"
 for type in feat fix docs chore test refactor perf ci build; do
   expect accept "$type: something"
 done

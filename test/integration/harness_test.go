@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -147,4 +150,25 @@ func TestLocalStackProvisionsTheQueues(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, dlqAttrs.Attributes["QueueArn"], redrive.DeadLetterTargetArn, "the input queue redrives to the DLQ")
+}
+
+// The harness and docker-compose.yml must run the same images, or the tests
+// stop describing what a reviewer runs. Dependabot bumps the compose file;
+// this fails until the harness follows.
+func TestHarnessImagesMatchCompose(t *testing.T) {
+	compose, err := os.ReadFile(filepath.Join(infra.RepoRoot(), "docker-compose.yml"))
+	require.NoError(t, err)
+
+	// Matches plain `image: name:tag` lines only. A quoted value or a trailing
+	// comment will not match and shows up as a (loud) mismatch, never as a
+	// silent pass.
+	imageLine := regexp.MustCompile(`(?m)^\s+image:\s+(\S+)\s*$`)
+	inCompose := map[string]bool{}
+	for _, match := range imageLine.FindAllStringSubmatch(string(compose), -1) {
+		inCompose[match[1]] = true
+	}
+
+	for name, image := range infra.Images() {
+		require.Truef(t, inCompose[image], "the harness starts %s as %s, which docker-compose.yml does not run (compose images: %v)", name, image, inCompose)
+	}
 }

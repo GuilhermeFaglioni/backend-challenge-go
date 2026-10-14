@@ -49,6 +49,17 @@ const (
 	appPass   = "app_local_pw" //nolint:gosec // local test credential, also in deploy/postgres and docker-compose.yml
 )
 
+// Images returns the images the harness starts, by name. A test compares them
+// with docker-compose.yml: Dependabot updates the compose file, and the two
+// must not drift apart.
+func Images() map[string]string {
+	return map[string]string{
+		"postgres":   postgresImage,
+		"localstack": localstackImage,
+		"keycloak":   keycloakImage,
+	}
+}
+
 var (
 	repoRootOnce sync.Once
 	repoRootPath string
