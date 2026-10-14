@@ -22,7 +22,7 @@ func newTestMux(checks ...health.Check) *http.ServeMux {
 
 func TestLive(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newTestMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	newTestMux().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health/live", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -32,7 +32,7 @@ func TestLive(t *testing.T) {
 func TestReadyReturns503WhenACheckFails(t *testing.T) {
 	failing := health.Check{Name: "postgres", Fn: func(context.Context) error { return errors.New("down") }}
 	rec := httptest.NewRecorder()
-	newTestMux(failing).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	newTestMux(failing).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health/ready", nil))
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
@@ -48,7 +48,7 @@ func TestReadyReturns503WhenACheckFails(t *testing.T) {
 
 func TestUnknownMethodIsRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newTestMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health/live", nil))
+	newTestMux().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/health/live", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rec.Code)

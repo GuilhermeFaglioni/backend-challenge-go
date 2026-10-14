@@ -674,7 +674,8 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 
 | Arquivo | Conteúdo |
 | --- | --- |
-| `ci.yml` | PRs e push na `main`: formatação, vet, módulos, testes e demais checks. |
+| `ci.yml` | PRs e push na `main`: formatação, vet, módulos, testes, lint, vulnerabilidades e demais checks. |
+| `pr-title.yml` | Valida o título do PR (Conventional Commits). Workflow separado porque `edited` no `ci.yml` re-executaria o pipeline inteiro a cada edição da descrição. |
 | `publish.yml` | Publicação da imagem no GHCR após o CI verde na `main` e em tags `v*`. |
 | `nightly.yml` | Execução agendada das camadas 2 e 3 com `-count=5`. |
 | `dependabot.yml` | Atualização semanal de dependências. |
@@ -684,5 +685,9 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 
 - **Format, vet and modules:** falha se algum arquivo não estiver formatado pelo `gofmt` (lista os arquivos), se o `go vet` reclamar ou se `go mod tidy -diff` apontar qualquer alteração em `go.mod` ou `go.sum` (inclusive um `go.sum` ausente).
 - **Unit tests:** `go test -race -count=1 -shuffle=on -v ./...`. O `-shuffle=on` imprime uma seed por pacote (`-test.shuffle <seed>`); uma falha é reproduzida localmente com `-shuffle=<seed>`.
+
+- **Lint:** `golangci-lint` v2 com a lista curada de `.golangci.yml`, cada linter ligado a um risco do projeto (erros tratados com `errors.Is/As`, I/O com `context`, corpo de resposta e linhas de banco fechados, segurança). `rowserrcheck` e `sqlclosecheck` entendem `database/sql`, não `pgx`; os usos de `pgx` são cobertos por revisão e pelos testes de integração.
+- **Vulnerabilities:** `govulncheck` com versão fixa, só reporta vulnerabilidades em código alcançável.
+- **PR title** (`pr-title.yml`): `<tipo>(<escopo opcional>)<!opcional>: <descrição>`, com tipos `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, `build`. O escopo aceita só minúsculas, números e `. _ / -`, e o título precisa ter uma linha. O título chega ao script só por variável de ambiente (`PR_TITLE`); o script o trata como texto e um autoteste prova que sintaxe de shell no título não é executada.
 
 Os nomes dos jobs são estáveis porque a proteção da `main` os referencia como checks obrigatórios.

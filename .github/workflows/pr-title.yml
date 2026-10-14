@@ -1,0 +1,37 @@
+name: PR conventions
+
+# Separate from ci.yml because editing a title must re-run only this check:
+# `edited` in ci.yml would re-run the whole pipeline on every description edit.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Safe to run the PR's own script: with the pull_request trigger the
+      # token is read-only and no secrets are exposed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Self-test
+        run: bash .github/scripts/pr-title_test.sh
+
+      # The title is untrusted text: it reaches the script only through the
+      # environment, never through ${{ }} interpolation into the command.
+      - name: Check title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bash .github/scripts/pr-title.sh
