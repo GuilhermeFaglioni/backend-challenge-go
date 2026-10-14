@@ -676,7 +676,7 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 | --- | --- |
 | `ci.yml` | PRs e push na `main`: formatação, vet, módulos, testes, lint, vulnerabilidades e demais checks. |
 | `pr-title.yml` | Valida o título do PR (Conventional Commits). Workflow separado porque `edited` no `ci.yml` re-executaria o pipeline inteiro a cada edição da descrição. |
-| `publish.yml` | Publicação da imagem no GHCR após o CI verde na `main` e em tags `v*`. |
+| `publish.yml` | Publicação da imagem no GHCR após o CI verde na `main` e em tags `vX.Y.Z`. |
 | `nightly.yml` | Execução agendada das camadas 2 e 3 com `-count=5`. |
 | `dependabot.yml` | Atualização semanal de dependências. |
 | `.golangci.yml` (raiz) | Configuração do `golangci-lint` com a lista curada de linters. |
@@ -684,6 +684,7 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 ### Checks do `ci.yml`
 
 - **Format, vet and modules:** falha se algum arquivo não estiver formatado pelo `gofmt` (lista os arquivos), se o `go vet` reclamar ou se `go mod tidy -diff` apontar qualquer alteração em `go.mod` ou `go.sum` (inclusive um `go.sum` ausente).
+- **Script self-tests:** `pr-title_test.sh` e `image-tags_test.sh`, os testes dos scripts que decidem o título do PR e as tags da imagem.
 - **Unit tests:** `go test -race -count=1 -shuffle=on -v ./...`. O `-shuffle=on` imprime uma seed por pacote (`-test.shuffle <seed>`); uma falha é reproduzida localmente com `-shuffle=<seed>`.
 
 - **Lint:** `golangci-lint` v2 com a lista curada de `.golangci.yml`, cada linter ligado a um risco do projeto (erros tratados com `errors.Is/As`, I/O com `context`, corpo de resposta e linhas de banco fechados, segurança). `rowserrcheck` e `sqlclosecheck` entendem `database/sql`, não `pgx`; os usos de `pgx` são cobertos por revisão e pelos testes de integração.
@@ -691,5 +692,15 @@ Pipeline em GitHub Actions (`.github/workflows/`). O repositório é público, e
 - **PR title** (`pr-title.yml`): `<tipo>(<escopo opcional>)<!opcional>: <descrição>`, com tipos `feat`, `fix`, `docs`, `chore`, `test`, `refactor`, `perf`, `ci`, `build`. O escopo aceita só minúsculas, números e `. _ / -`, e o título precisa ter uma linha. O título chega ao script só por variável de ambiente (`PR_TITLE`); o script o trata como texto e um autoteste prova que sintaxe de shell no título não é executada.
 
 - **Image (multi-arch build)** e **Compose smoke test:** o primeiro constrói a imagem para `linux/amd64` e `linux/arm64` sem publicá-la, sem QEMU (o Dockerfile compila no próprio builder e o estágio final não executa nada). O segundo constrói a imagem da arquitetura do runner, sobe o `docker-compose.yml` inteiro com ela (`APP_IMAGE`, `--no-build`) e roda `.github/scripts/smoke.sh`, que espera por condições observáveis (sem `sleep` fixo): migrations concluídas com sucesso, as três instâncias prontas com Postgres e SQS ok, token do Keycloak com `provider_id`, audience `wallet-api` e papel `provider`, e as filas com o redrive para a DLQ. Em caso de falha, os logs do Compose são guardados por 7 dias.
+
+- **Publish** (`publish.yml`): publica a imagem multi-arquitetura no GHCR. Dispara quando o `CI` conclui com sucesso após um push na `main` (tags `sha-<curto>` e `latest`) e quando uma tag `vX.Y.Z` é empurrada (`sha-<curto>`, `X.Y.Z` e `X.Y`, nunca `latest`). Nunca roda em PR nem com CI vermelho. Detalhes que importam:
+  - Num `workflow_run`, `GITHUB_SHA` é o último commit da `main`, que pode ser mais novo que o validado; a publicação usa o `head_sha` do run do CI (checkout e tags).
+  - Uma tag pode ser criada em qualquer commit, então o job exige um run verde do `CI` para o commit exato da tag antes de publicar.
+  - As tags são calculadas por `.github/scripts/image-tags.sh`, com autoteste. O nome da tag git é texto controlável por quem empurra a tag: só é comparado com `^vX.Y.Z$` e nunca avaliado.
+  - Dois merges seguidos podem terminar o CI fora de ordem, e o CI pode ser re-executado num commit antigo. Por isso o `latest` só é movido se o commit ainda for a ponta da `main` (`MOVE_LATEST`); caso contrário só a tag `sha-<curto>` é publicada.
+  - Depois do push, um passo consulta o registro e falha se o manifesto não tiver `linux/amd64` e `linux/arm64`.
+  - É o único job do repositório com `packages: write` (e `actions: read` para consultar o CI). O `workflow_run` só publica se o CI veio de um push na `main` do próprio repositório.
+  - Limitação: num push de tag, o GitHub usa o `publish.yml` do commit marcado. Quem tem acesso de escrita poderia marcar um branch com o workflow alterado e contornar a exigência de CI verde. A mitigação é uma regra de proteção de tags `v*` no repositório, a configurar junto com a proteção da `main` (ticket #11).
+  - O pacote no GHCR nasce privado. Para o avaliador baixar sem login, o pacote precisa ser tornado público uma vez nas configurações do pacote no GitHub (a visibilidade não pode ser alterada pelo `GITHUB_TOKEN`).
 
 Os nomes dos jobs são estáveis porque a proteção da `main` os referencia como checks obrigatórios.

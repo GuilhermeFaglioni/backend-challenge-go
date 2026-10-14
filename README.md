@@ -63,6 +63,34 @@ make deps
 make run
 ```
 
+## Imagem publicada
+
+A cada merge na `main`, depois do CI verde, a imagem multi-arquitetura (`linux/amd64` e `linux/arm64`) é publicada no GitHub Container Registry:
+
+| Tag | Significado |
+| --- | --- |
+| `latest` | último commit da `main` |
+| `sha-<7 caracteres>` | commit exato que o CI validou |
+| `X.Y.Z` e `X.Y` | release, criada ao empurrar a tag git `vX.Y.Z` |
+
+```bash
+docker pull ghcr.io/guilhermefaglioni/backend-challenge-go:latest
+```
+
+> O pacote no GitHub Container Registry nasce privado. Se o `docker pull` responder `denied`, o dono do repositório precisa torná-lo público uma vez (GitHub, aba Packages, configurações do pacote, visibilidade), ou você pode fazer `docker login ghcr.io` com um token com `read:packages`.
+
+A imagem sozinha não sobe: ela precisa de PostgreSQL, SQS e Keycloak, então o caminho suportado é o Compose abaixo. Um `docker run` só serve para ver a aplicação recusar uma configuração inválida:
+
+```bash
+docker run --rm ghcr.io/guilhermefaglioni/backend-challenge-go:latest
+```
+
+Para subir o ambiente com a imagem publicada, sem compilar:
+
+```bash
+APP_IMAGE=ghcr.io/guilhermefaglioni/backend-challenge-go:latest docker compose up --no-build
+```
+
 ## Variáveis de ambiente
 
 Todas estão em [.env.example](.env.example). A aplicação valida a configuração no boot e não sobe se algo estiver inválido.

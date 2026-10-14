@@ -42,6 +42,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Script self-tests
+        run: |
+          bash .github/scripts/pr-title_test.sh
+          bash .github/scripts/image-tags_test.sh
+
       - name: go mod tidy
         # -diff prints what tidy would change and fails without touching files;
         # unlike git diff it also catches a go.sum that is missing altogether.
