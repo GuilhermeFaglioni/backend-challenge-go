@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -659,4 +660,49 @@ func TestTheLedgerOrderKeyIsUnique(t *testing.T) {
 	var index string
 	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_ledger_entries' AND indexname = 'wallet_ledger_entries_wallet_seq'`).Scan(&index))
 	require.Contains(t, index, "(wallet_id, seq)")
+}
+
+// A Ledger Entry has to fit the kind of the transaction that caused it. The coherence
+// trigger of the ledger is turned off so the check under test is the only one standing.
+func TestALedgerEntryAgreesWithTheKindOfItsTransaction(t *testing.T) {
+	s := newSchema(t)
+	s.disable(t, "wallet_ledger_entries", "wallet_ledger_entries_wallet_guard")
+	walletID, playerID := s.wallet(t)
+
+	cases := []struct {
+		kind, direction string
+		fits            bool
+	}{
+		{"BET", "DEBIT", true}, {"BET", "CREDIT", false},
+		{"WIN", "CREDIT", true}, {"WIN", "DEBIT", false},
+		{"LOSS", "CREDIT", false}, {"LOSS", "DEBIT", false},
+		{"REFUND", "CREDIT", true}, {"REFUND", "DEBIT", false},
+		{"ROLLBACK", "CREDIT", true}, {"ROLLBACK", "DEBIT", true},
+	}
+	for i, c := range cases {
+		amount := int64(100)
+		if c.kind == "LOSS" {
+			amount = 0
+		}
+		txID := s.external(t, walletID, playerID, "p", fmt.Sprintf("k-%d", i), fmt.Sprintf("e-%d", i), c.kind, amount, "PROCESSED")
+		before, after := int64(0), int64(100)
+		if c.direction == "DEBIT" {
+			before, after = 100, 0
+		}
+		got := s.exec(s.owner, `INSERT INTO wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount_minor, balance_before_minor, balance_after_minor, created_at)
+			VALUES ($1, $2, $3, $4, 100, $5, $6, $7)`, uuid.New(), walletID, txID, c.direction, before, after, now)
+		if c.fits {
+			require.Empty(t, got, "%s %s", c.kind, c.direction)
+		} else {
+			require.Equal(t, checkViolation, got, "%s %s", c.kind, c.direction)
+		}
+	}
+}
+
+func TestAnEntryForATransactionThatDoesNotExistIsStillAForeignKeyError(t *testing.T) {
+	s := newSchema(t)
+	s.disable(t, "wallet_ledger_entries", "wallet_ledger_entries_wallet_guard")
+	walletID, _ := s.wallet(t)
+	require.Equal(t, foreignKeyError, s.exec(s.owner, `INSERT INTO wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount_minor, balance_before_minor, balance_after_minor, created_at)
+		VALUES ($1, $2, $3, 'CREDIT', 100, 0, 100, $4)`, uuid.New(), walletID, uuid.New(), now))
 }

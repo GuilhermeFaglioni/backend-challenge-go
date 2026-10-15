@@ -169,6 +169,8 @@ func (h *Wagering) fail(w http.ResponseWriter, req *http.Request, correlation st
 		writeError(w, http.StatusConflict, CodeDuplicateExternalTransaction, "the external transaction id was already used with another idempotency key")
 	case errors.Is(err, processwager.ErrUnsupportedKind):
 		writeInvalid(w, []fieldIssue{{Field: "kind", Issue: "this kind of operation is not processed yet"}})
+	case errors.Is(err, processwager.ErrReferenceNotSupported):
+		writeInvalid(w, []fieldIssue{{Field: "referenceExternalTransactionId", Issue: "operations that name a reference are not processed yet"}})
 	case errors.Is(err, processwager.ErrInvalidInput):
 		writeInvalid(w, issuesOf(err))
 	case errors.Is(err, application.ErrTemporarilyUnavailable):

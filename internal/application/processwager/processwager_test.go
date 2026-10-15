@@ -635,22 +635,141 @@ func TestInvalidInputNeverReachesTheDatabase(t *testing.T) {
 	}
 }
 
-func TestKindsNotProcessedYetAreRefusedBeforeTheDatabase(t *testing.T) {
-	for _, kind := range []wager.Kind{wager.KindWin, wager.KindLoss, wager.KindRefund, wager.KindRollback} {
+func TestReversalsAreNotProcessedYetAndAreRefusedBeforeTheDatabase(t *testing.T) {
+	for _, kind := range []wager.Kind{wager.KindRefund, wager.KindRollback} {
 		f := newFixture(t, 10000)
 		in := betInput(2500)
 		in.Request.Kind = kind
-		switch kind {
-		case wager.KindLoss:
-			in.Request.Amount = brl(0)
-		case wager.KindRefund, wager.KindRollback:
-			in.Request.ReferenceExternalTransactionID = "transaction-100"
-		}
+		in.Request.ReferenceExternalTransactionID = "transaction-100"
 		_, err := f.uc.Execute(t.Context(), in)
 		require.ErrorIs(t, err, processwager.ErrUnsupportedKind, kind)
 		require.Zero(t, f.db.uowRuns)
 		require.Equal(t, []processwager.Outcome{processwager.OutcomeUnsupported}, f.rec.outcomes())
 	}
+}
+
+func TestAWinThatNamesAReferenceIsRefusedBeforeTheDatabase(t *testing.T) {
+	f := newFixture(t, 10000)
+	in := betInput(2500)
+	in.Request.Kind = wager.KindWin
+	in.Request.ReferenceExternalTransactionID = "transaction-100"
+
+	_, err := f.uc.Execute(t.Context(), in)
+
+	require.ErrorIs(t, err, processwager.ErrReferenceNotSupported)
+	require.NotErrorIs(t, err, processwager.ErrUnsupportedKind)
+	require.Zero(t, f.db.uowRuns, "nothing is stored: it is not an answer, the provider sends it again later")
+	require.Equal(t, []processwager.Outcome{processwager.OutcomeUnsupported}, f.rec.outcomes())
+}
+
+// --- WIN and LOSS ---------------------------------------------------------------------
+
+func winInput(minor int64) processwager.Input {
+	in := betInput(minor)
+	in.Request.Kind = wager.KindWin
+	in.Request.ExternalTransactionID = "transaction-win"
+	in.IdempotencyKey = "provider-a:transaction-win"
+	return in
+}
+
+func lossInput() processwager.Input {
+	in := betInput(0)
+	in.Request.Kind = wager.KindLoss
+	in.Request.ExternalTransactionID = "transaction-loss"
+	in.IdempotencyKey = "provider-a:transaction-loss"
+	return in
+}
+
+func TestAWinCreditsTheWalletWithItsEntryAndBothEvents(t *testing.T) {
+	f := newFixture(t, 10000)
+
+	out, err := f.uc.Execute(t.Context(), winInput(4000))
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"find", "lock", "claim", "update", "ledger", "finish", "outbox", "outbox"}, f.db.calls)
+	require.Equal(t, wager.StatusProcessed, out.Transaction.Status())
+	result, _ := out.Transaction.Result()
+	require.Equal(t, int64(14000), result.Balance.Minor())
+	require.Equal(t, int64(14000), f.balance())
+	require.Len(t, f.db.entries, 1)
+	require.Equal(t, wallet.DirectionCredit, f.db.entries[0].Direction())
+	require.Equal(t, []string{"WagerTransactionProcessed", "WalletBalanceChanged"}, types(f.db.events))
+	require.Equal(t, []processwager.Outcome{processwager.OutcomeProcessed}, f.rec.outcomes())
+}
+
+func TestALossWritesTheOutcomeAndOneEventButMovesNothing(t *testing.T) {
+	f := newFixture(t, 10000)
+
+	out, err := f.uc.Execute(t.Context(), lossInput())
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"find", "lock", "claim", "finish", "outbox"}, f.db.calls,
+		"the wallet is locked and read, but never updated, and no entry is written")
+	require.Equal(t, wager.StatusProcessed, out.Transaction.Status())
+	result, _ := out.Transaction.Result()
+	require.Equal(t, int64(10000), result.Balance.Minor())
+	require.Equal(t, int64(2), result.WalletVersion, "the version the wallet stands at")
+	require.Equal(t, int64(10000), f.balance())
+	require.Equal(t, int64(2), f.db.wallets[wid].Version(), "the wallet's version did not change")
+	require.Empty(t, f.db.entries)
+	require.Equal(t, []string{"WagerTransactionProcessed"}, types(f.db.events), "no WalletBalanceChanged: the balance did not change")
+	require.Equal(t, wid, f.db.events[0].AggregateID())
+}
+
+func TestWinsAndLossesAreReplayedWithTheBalanceOfTheFirstTime(t *testing.T) {
+	for name, in := range map[string]processwager.Input{"win": winInput(4000), "loss": lossInput()} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, 10000)
+			first, err := f.uc.Execute(t.Context(), in)
+			require.NoError(t, err)
+			_, err = f.uc.Execute(t.Context(), betInput(1000)) // the balance moves on
+			require.NoError(t, err)
+			entries, events := len(f.db.entries), len(f.db.events)
+
+			again, err := f.uc.Execute(t.Context(), in)
+
+			require.NoError(t, err)
+			require.True(t, again.IdempotentReplay)
+			require.Equal(t, first.Transaction.ID(), again.Transaction.ID())
+			a, _ := first.Transaction.Result()
+			b, _ := again.Transaction.Result()
+			require.Equal(t, a, b)
+			require.Len(t, f.db.entries, entries, "nothing written again")
+			require.Len(t, f.db.events, events)
+		})
+	}
+}
+
+func TestAKeyReusedWithAnotherKindOrAmountIsAConflict(t *testing.T) {
+	f := newFixture(t, 10000)
+	_, err := f.uc.Execute(t.Context(), winInput(4000))
+	require.NoError(t, err)
+
+	other := winInput(4001)
+	_, err = f.uc.Execute(t.Context(), other)
+	require.ErrorIs(t, err, processwager.ErrIdempotencyKeyConflict)
+
+	asBet := betInput(4000)
+	asBet.IdempotencyKey = "provider-a:transaction-win"
+	asBet.Request.ExternalTransactionID = "transaction-win"
+	_, err = f.uc.Execute(t.Context(), asBet)
+	require.ErrorIs(t, err, processwager.ErrIdempotencyKeyConflict, "the kind is part of what was asked")
+	require.Equal(t, int64(14000), f.balance())
+}
+
+func TestAWinOnAWalletOfAnotherPlayerOrCurrencyIsAStoredRefusalWithoutAMovement(t *testing.T) {
+	f := newFixture(t, 10000)
+	in := winInput(4000)
+	in.Request.PlayerID = uuid.New()
+
+	out, err := f.uc.Execute(t.Context(), in)
+
+	require.NoError(t, err)
+	require.Equal(t, wager.StatusRejected, out.Transaction.Status())
+	require.Equal(t, wager.FailurePlayerMismatch, out.Transaction.FailureCode())
+	require.Equal(t, int64(10000), f.balance())
+	require.Empty(t, f.db.entries)
+	require.Equal(t, []string{"WagerTransactionRejected"}, types(f.db.events))
 }
 
 // --- failures leave nothing behind --------------------------------------------------

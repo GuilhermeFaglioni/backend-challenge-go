@@ -122,17 +122,20 @@ func TestInvalidOperationsAre400WithTheDocumentedBodyAndStoreNothing(t *testing.
 		key  string
 		body string
 	}{
-		"no idempotency key":       {"", valid},
-		"a negative amount":        {"k", replaceInBody(`"25.00"`, `"-25.00"`)},
-		"an amount with 1 decimal": {"k", replaceInBody(`"25.00"`, `"25.0"`)},
-		"NaN":                      {"k", replaceInBody(`"25.00"`, `"NaN"`)},
-		"an opening":               {"k", replaceInBody(`"BET"`, `"OPENING"`)},
-		"an unknown kind":          {"k", replaceInBody(`"BET"`, `"TRANSFER"`)},
-		"a kind not processed yet": {"k", replaceInBody(`"BET"`, `"WIN"`)},
-		"a zero bet":               {"k", replaceInBody(`"25.00"`, `"0.00"`)},
-		"a bad player":             {"k", replaceInBody(w.player, "nope")},
-		"no body":                  {"k", ""},
-		"an unknown field":         {"k", strings.TrimSuffix(valid, "}") + `,"extra":1}`},
+		"no idempotency key":           {"", valid},
+		"a negative amount":            {"k", replaceInBody(`"25.00"`, `"-25.00"`)},
+		"an amount with 1 decimal":     {"k", replaceInBody(`"25.00"`, `"25.0"`)},
+		"NaN":                          {"k", replaceInBody(`"25.00"`, `"NaN"`)},
+		"an opening":                   {"k", replaceInBody(`"BET"`, `"OPENING"`)},
+		"an unknown kind":              {"k", replaceInBody(`"BET"`, `"TRANSFER"`)},
+		"a reversal not processed yet": {"k", strings.Replace(replaceInBody(`"BET"`, `"REFUND"`), `"roundId"`, `"referenceExternalTransactionId":"tx-0","roundId"`, 1)},
+		"a win naming a reference":     {"k", strings.Replace(replaceInBody(`"BET"`, `"WIN"`), `"roundId"`, `"referenceExternalTransactionId":"tx-0","roundId"`, 1)},
+		"a loss with an amount":        {"k", replaceInBody(`"BET"`, `"LOSS"`)},
+		"a win of zero":                {"k", strings.Replace(replaceInBody(`"BET"`, `"WIN"`), `"25.00"`, `"0.00"`, 1)},
+		"a zero bet":                   {"k", replaceInBody(`"25.00"`, `"0.00"`)},
+		"a bad player":                 {"k", replaceInBody(w.player, "nope")},
+		"no body":                      {"k", ""},
+		"an unknown field":             {"k", strings.TrimSuffix(valid, "}") + `,"extra":1}`},
 	}
 	for name, c := range cases {
 		status, _, answer := a.submit(t, a.client, a.provider, c.key, c.body)

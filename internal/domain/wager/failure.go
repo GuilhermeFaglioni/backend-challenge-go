@@ -9,6 +9,9 @@ type FailureCode string
 const (
 	// FailureInsufficientFunds: a BET beyond the balance.
 	FailureInsufficientFunds FailureCode = "INSUFFICIENT_FUNDS"
+	// FailureBalanceLimitExceeded: a credit that would take the balance beyond what a
+	// wallet can hold.
+	FailureBalanceLimitExceeded FailureCode = "BALANCE_LIMIT_EXCEEDED"
 	// FailureReversalInsufficientFunds: a reversal that would take the balance below
 	// zero, told apart from the BET's code as the challenge requires.
 	FailureReversalInsufficientFunds FailureCode = "REVERSAL_INSUFFICIENT_FUNDS"
@@ -53,6 +56,7 @@ var catalog = []struct {
 	class FailureClass
 }{
 	{FailureInsufficientFunds, ClassDefinitive},
+	{FailureBalanceLimitExceeded, ClassDefinitive},
 	{FailureReversalInsufficientFunds, ClassDefinitive},
 	{FailureWalletNotFound, ClassDefinitive},
 	{FailureCurrencyMismatch, ClassCorrectable},

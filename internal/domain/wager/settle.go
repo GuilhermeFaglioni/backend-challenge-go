@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet"
 )
 
@@ -24,14 +25,20 @@ type Settlement struct {
 // REJECTED and whose wallet and entry are untouched. An error means the call itself
 // was wrong (another wallet, a transaction that already ended, a kind not supported).
 //
-// For a BET, the rules are checked in this order: the wallet belongs to the player
-// (PLAYER_MISMATCH), it is in the bet's currency (CURRENCY_MISMATCH), and it has the
-// funds (INSUFFICIENT_FUNDS). Only then is the wallet debited.
+// The rules are checked in this order: the wallet belongs to the player
+// (PLAYER_MISMATCH) and it is in the operation's currency (CURRENCY_MISMATCH). Then
+// the kind decides:
+//
+//   - BET debits, and is refused for lack of funds (INSUFFICIENT_FUNDS);
+//   - WIN credits, and is refused if the balance could not hold the prize
+//     (BALANCE_LIMIT_EXCEEDED);
+//   - LOSS records a result and moves nothing: no Ledger Entry, and the wallet comes
+//     back the very same, so its version does not change.
 func (t Transaction) Settle(w wallet.Wallet, entryID uuid.UUID, at time.Time) (Settlement, error) {
 	if !t.IsValid() || !w.IsValid() {
 		return Settlement{}, ErrUninitialized
 	}
-	if t.kind != KindBet {
+	if t.kind != KindBet && t.kind != KindWin && t.kind != KindLoss {
 		return Settlement{}, fmt.Errorf("%w: %s", ErrKindNotSupported, t.kind)
 	}
 	if w.ID() != t.walletID {
@@ -52,9 +59,20 @@ func (t Transaction) Settle(w wallet.Wallet, entryID uuid.UUID, at time.Time) (S
 		return reject(FailureCurrencyMismatch)
 	}
 
-	next, entry, err := w.Debit(wallet.Movement{EntryID: entryID, TransactionID: t.id, Amount: t.amount, At: at})
-	if errors.Is(err, wallet.ErrInsufficientFunds) {
-		return reject(FailureInsufficientFunds)
+	movement := wallet.Movement{EntryID: entryID, TransactionID: t.id, Amount: t.amount, At: at}
+	next, entry := w, wallet.LedgerEntry{}
+	var err error
+	switch t.kind {
+	case KindBet:
+		next, entry, err = w.Debit(movement)
+		if errors.Is(err, wallet.ErrInsufficientFunds) {
+			return reject(FailureInsufficientFunds)
+		}
+	case KindWin:
+		next, entry, err = w.Credit(movement)
+		if errors.Is(err, money.ErrOverflow) {
+			return reject(FailureBalanceLimitExceeded)
+		}
 	}
 	if err != nil {
 		return Settlement{}, err
