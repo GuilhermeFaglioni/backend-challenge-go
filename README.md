@@ -118,7 +118,9 @@ O LocalStack executa [deploy/localstack/init/01-sqs.sh](deploy/localstack/init/0
 
 ## Migrations
 
-Ficam em [migrations/](migrations/) no formato do `golang-migrate` e rodam automaticamente no `docker compose up` (serviço `migrate`, como dono do schema `wagering_owner`).
+Ficam em [migrations/](migrations/) no formato do `golang-migrate` (`000001_nome.up.sql` e `000001_nome.down.sql`, versões contíguas a partir de `000001`) e rodam automaticamente no `docker compose up` (serviço `migrate`, como dono do schema `wagering_owner`).
+
+Aplicar tudo, e reverter a última migration (ou as `N` últimas):
 
 ```bash
 make migrate-up
@@ -127,6 +129,39 @@ make migrate-up
 ```bash
 make migrate-down
 ```
+
+```bash
+make migrate-down N=2
+```
+
+Os alvos usam o serviço `migrate` do Compose, que alcança o PostgreSQL pela rede interna, como dono do schema (`wagering_owner`). Fora do Docker, com o [CLI do golang-migrate](https://github.com/golang-migrate/migrate) instalado e o PostgreSQL do Compose de pé (a porta do host é `POSTGRES_PORT`, 5432 por padrão), o mesmo comando é:
+
+```bash
+migrate -path migrations -database "postgres://wagering_owner:owner_local_pw@localhost:5432/wagering?sslmode=disable" down 2
+```
+
+(credenciais apenas locais, as mesmas do `docker-compose.yml`).
+
+### Como documentamos o rollback
+
+Todo `.down.sql` começa com um cabeçalho de comentários, com estes quatro campos, nesta ordem, que dizem o que acontece **antes** de alguém reverter:
+
+| Campo | O que diz |
+| --- | --- |
+| `Undoes` | o que a migration desfaz |
+| `Loses` | o que se perde ao reverter: dados **e proteções** (constraints, triggers, índices, permissões). Um rollback que apaga dados ou remove proteções precisa dizer isso aqui; `nothing` só vale quando for verdade |
+| `Requires` | o que precisa estar de pé (ou ausente) antes de reverter, como a ordem em relação a outras migrations |
+| `Command` | o comando exato, com `migrate ... down` |
+
+```sql
+-- Undoes: the creation of the ledger table and its triggers.
+-- Loses: ALL ledger entries, that is, the financial history. Use only before real data exists.
+-- Requires: migrations that depend on the ledger are reverted first.
+-- Command: make migrate-down N=1
+DROP TABLE wallet_ledger_entries;
+```
+
+Um campo pode continuar nas linhas seguintes, começando com `--` e dois espaços ou mais. Um teste (`go test ./test/migrations/`, no CI) reprova o build se faltar o par `up`/`down`, se houver salto ou repetição de versão, se o cabeçalho faltar, estiver incompleto ou fora de ordem, ou se um `.down.sql` que apaga dados (`DROP TABLE`, `TRUNCATE`, `DELETE FROM`) ou remove proteções (`DROP TRIGGER`, `DROP INDEX`, `DROP CONSTRAINT`, `DROP FUNCTION`, `REVOKE`) disser em `Loses` que não perde nada (`nothing`, `none`, `no data`, `no loss`, `n/a`). Comandos só mencionados em comentários não contam.
 
 ## Autenticação
 

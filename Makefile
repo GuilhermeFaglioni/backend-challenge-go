@@ -1,5 +1,7 @@
 .PHONY: up down deps run build test test-race vet fmt migrate-up migrate-down
 
+N ?= 1
+
 MIGRATE = docker compose run --rm migrate -path=/migrations \
 	-database=postgres://wagering_owner:owner_local_pw@postgres:5432/wagering?sslmode=disable
 
@@ -33,5 +35,5 @@ fmt:
 migrate-up:
 	$(MIGRATE) up
 
-migrate-down: ## Revert the last migration
-	$(MIGRATE) down 1
+migrate-down: ## Revert the last N migrations (default 1): make migrate-down N=2
+	$(MIGRATE) down $(N)
