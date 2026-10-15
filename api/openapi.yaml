@@ -55,10 +55,16 @@ paths:
         `failureCode`. Sending it again returns the same `422`; to correct it, send a new
         operation with a new key and external id.
 
-        `BET`, `WIN` and `LOSS` are processed. A `WIN` that names a
-        `referenceExternalTransactionId` is answered `400` until references are resolved, and
-        so are `REFUND` and `ROLLBACK`. `OPENING` is reserved to the internal opening of a
-        wallet and is always `400`.
+        Every kind is processed. `REFUND` and `ROLLBACK` (the Reversals) name the operation
+        they reverse in `referenceExternalTransactionId`, which is looked for among the
+        provider's own transactions. The Reference decides, in this order: not found
+        (`REFERENCE_NOT_FOUND`), ended without success (`REFERENCE_NOT_PROCESSED`), a kind this
+        cannot act on (`REFERENCE_KIND_INVALID`), another player, wallet, currency or round
+        (`REFERENCE_MISMATCH`), another amount (`REFERENCE_AMOUNT_MISMATCH`), already reversed
+        (`REFERENCE_ALREADY_REVERSED`). A reversal that would take the balance below zero is
+        `REVERSAL_INSUFFICIENT_FUNDS`. A `WIN` may name the `BET` it pays, of the same round, and
+        is never a Reversal. All of these are stored `422` results. `OPENING` is reserved to the
+        internal opening of a wallet and is always `400`.
 
         A `LOSS` moves no money: it answers `200` with the wallet's balance, writes no
         ledger entry and leaves the wallet's version as it was.
@@ -94,6 +100,18 @@ paths:
                   gameId: fortune-chimp
                   kind: WIN
                   money: { amount: '100.00', currency: BRL }
+              refund:
+                summary: Giving the bet of 25.00 BRL back
+                value:
+                  providerId: provider-a
+                  externalTransactionId: transaction-126
+                  referenceExternalTransactionId: transaction-123
+                  playerId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  walletId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  roundId: round-987
+                  gameId: fortune-chimp
+                  kind: REFUND
+                  money: { amount: '25.00', currency: BRL }
               loss:
                 summary: A lost round, which moves nothing
                 value:
@@ -607,7 +625,7 @@ components:
           maxLength: 128
           description: |
             Required for `REFUND` and `ROLLBACK`, optional for `WIN`, not allowed otherwise.
-            Operations that name one are not processed yet and are answered `400`.
+            It is the external id of an earlier operation of the same provider.
 
     ProcessedOperation:
       type: object

@@ -370,6 +370,18 @@ if not result["consistent"] or result["storedBalance"]["amount"] != "80.00" or r
 PY
 ok "a win credits, a loss moves nothing (no ledger entry), and the books agree at 80.00"
 
+# A REFUND gives the first bet back, once: a second reversal of it is refused.
+refund_body="{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-refund-1\",\"referenceExternalTransactionId\":\"smoke-bet-1\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"REFUND\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
+status=$(api_status POST "$second_port" /wagering/transactions "$provider_token" "$refund_body" 'Idempotency-Key: smoke-refund-key-1')
+[ "$status" = "200" ] || fail "a refund answered ${status}: $(cat "$SMOKE_BODY")"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "105.00" ] || fail "the refund left $(json_get balance.amount < "$SMOKE_BODY"), not 105.00"
+rollback_body="${refund_body/smoke-refund-1/smoke-rollback-1}"
+rollback_body="${rollback_body/REFUND/ROLLBACK}"
+status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" "$rollback_body" 'Idempotency-Key: smoke-rollback-key-1')
+[ "$status" = "422" ] || fail "a rollback of the refunded bet answered ${status}, not 422"
+[ "$(json_get failureCode < "$SMOKE_BODY")" = "REFERENCE_ALREADY_REVERSED" ] || fail "the rollback was refused with $(json_get failureCode < "$SMOKE_BODY")"
+ok "a refund returns the bet (105.00) and a second reversal of it is refused (REFERENCE_ALREADY_REVERSED)"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"

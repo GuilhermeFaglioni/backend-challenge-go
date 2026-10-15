@@ -22,6 +22,7 @@ var (
 	ErrPayloadHashMismatch     = errors.New("wager: the stored payload hash is not the hash of the stored request")
 	ErrNoReference             = errors.New("wager: this transaction has no reference to wait for")
 	ErrWalletMismatch          = errors.New("wager: the wallet is not the transaction's wallet")
-	ErrKindNotSupported        = errors.New("wager: this kind of transaction cannot be settled yet")
+	ErrKindNotSupported        = errors.New("wager: this kind of transaction cannot be settled")
+	ErrReferenceUnresolved     = errors.New("wager: this operation names a reference; settle it against the reference it resolves to")
 	ErrExternalFieldsOnOpening = errors.New("wager: an internal opening has no provider, external id, key, hash, round, game or reference")
 )

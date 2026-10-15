@@ -172,9 +172,11 @@ type WagerTransactionProcessedData struct {
 	ExternalTransactionID string       `json:"externalTransactionId,omitempty"`
 	RoundID               string       `json:"roundId,omitempty"`
 	GameID                string       `json:"gameId,omitempty"`
-	Money                 money.Money  `json:"money"`
-	Balance               money.Money  `json:"balance"`
-	WalletVersion         int64        `json:"walletVersion"`
+	// ReferenceExternalTransactionID is the Reference the operation named, when it named one.
+	ReferenceExternalTransactionID string      `json:"referenceExternalTransactionId,omitempty"`
+	Money                          money.Money `json:"money"`
+	Balance                        money.Money `json:"balance"`
+	WalletVersion                  int64       `json:"walletVersion"`
 }
 
 func (WagerTransactionProcessedData) eventType() string        { return typeWagerTransactionProcessed }
@@ -223,16 +225,18 @@ func hasExactlyTheMetadataOf(origin wager.Origin, fields ...string) bool {
 // operation. The wallet is the one the operation asked for, which may not exist
 // (WALLET_NOT_FOUND).
 type WagerTransactionRejectedData struct {
-	TransactionID         uuid.UUID         `json:"transactionId"`
-	WalletID              uuid.UUID         `json:"walletId"`
-	PlayerID              uuid.UUID         `json:"playerId"`
-	Kind                  wager.Kind        `json:"kind"`
-	ProviderID            string            `json:"providerId"`
-	ExternalTransactionID string            `json:"externalTransactionId"`
-	RoundID               string            `json:"roundId"`
-	GameID                string            `json:"gameId"`
-	Money                 money.Money       `json:"money"`
-	FailureCode           wager.FailureCode `json:"failureCode"`
+	TransactionID         uuid.UUID  `json:"transactionId"`
+	WalletID              uuid.UUID  `json:"walletId"`
+	PlayerID              uuid.UUID  `json:"playerId"`
+	Kind                  wager.Kind `json:"kind"`
+	ProviderID            string     `json:"providerId"`
+	ExternalTransactionID string     `json:"externalTransactionId"`
+	RoundID               string     `json:"roundId"`
+	GameID                string     `json:"gameId"`
+	// ReferenceExternalTransactionID is the Reference the operation named, when it named one.
+	ReferenceExternalTransactionID string            `json:"referenceExternalTransactionId,omitempty"`
+	Money                          money.Money       `json:"money"`
+	FailureCode                    wager.FailureCode `json:"failureCode"`
 }
 
 func (WagerTransactionRejectedData) eventType() string        { return typeWagerTransactionRejected }

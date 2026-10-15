@@ -10,7 +10,9 @@
 //     at all;
 //   - a business refusal (a Rejection) is stored, final and replayable.
 //
-// BET, WIN and LOSS are processed; the reversals arrive with their tickets.
+// Every kind of operation is processed here: the bets, wins and losses, and the Reversals
+// (REFUND and ROLLBACK) and the WINs that name a Reference, which are decided against the
+// Reference they resolve to. A Reference that does not exist yet is, for now, a Rejection.
 package processwager
 
 import (
@@ -27,18 +29,13 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/event"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wager"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet"
 )
 
 var (
 	// ErrInvalidInput marks a request the use case refuses before touching the
 	// database. The domain error that explains it is wrapped.
 	ErrInvalidInput = errors.New("processwager: invalid input")
-	// ErrUnsupportedKind: a valid kind this use case does not process yet.
-	ErrUnsupportedKind = errors.New("processwager: this kind of operation is not processed yet")
-	// ErrReferenceNotSupported: a WIN that names a Reference. Resolving References
-	// arrives with the reversals; until then the operation is refused before anything
-	// is stored.
-	ErrReferenceNotSupported = errors.New("processwager: operations that name a reference are not processed yet")
 	// ErrIdempotencyKeyConflict: the key was already used for a request with other
 	// content.
 	ErrIdempotencyKeyConflict = errors.New("processwager: the idempotency key was used with a different request")
@@ -62,7 +59,6 @@ const (
 	OutcomeDuplicateMessage  Outcome = "duplicate_message" // a message delivered again: handled before, nothing done
 	OutcomeMessageConflict   Outcome = "message_conflict"
 	OutcomeInvalid           Outcome = "invalid"
-	OutcomeUnsupported       Outcome = "unsupported"
 	OutcomeUnavailable       Outcome = "unavailable" // a Transient error: nothing was stored, try again
 	OutcomeError             Outcome = "error"
 )
@@ -70,7 +66,7 @@ const (
 // Outcomes lists every Outcome, so a metric can start each at zero.
 var Outcomes = []Outcome{
 	OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeKeyConflict, OutcomeDuplicateExternal,
-	OutcomeDuplicateMessage, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnsupported, OutcomeUnavailable, OutcomeError,
+	OutcomeDuplicateMessage, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnavailable, OutcomeError,
 }
 
 // Recorder measures the requests: one call per Execute.
@@ -141,14 +137,6 @@ func (u *UseCase) execute(ctx context.Context, in Input) (Output, Outcome, error
 	request, err := wager.NewRequest(in.Request)
 	if err != nil {
 		return Output{}, OutcomeInvalid, fmt.Errorf("%w: %w", ErrInvalidInput, err)
-	}
-	switch request.Kind() {
-	case wager.KindBet, wager.KindWin, wager.KindLoss:
-	default:
-		return Output{}, OutcomeUnsupported, fmt.Errorf("%w: %s", ErrUnsupportedKind, request.Kind())
-	}
-	if in.Request.ReferenceExternalTransactionID != "" {
-		return Output{}, OutcomeUnsupported, ErrReferenceNotSupported
 	}
 	now := u.deps.Now()
 	pending, err := wager.New(wager.NewParams{
@@ -237,8 +225,9 @@ func (u *UseCase) process(ctx context.Context, repos application.Repositories, i
 		return u.storedAfterLosingTheClaim(ctx, transactions, pending)
 	}
 
-	// 4. Decide and write.
-	settlement, err := pending.Settle(locked, u.deps.NewID(), u.deps.Now())
+	// 4. Resolve the Reference, if the operation names one. It is on this wallet, which is
+	// locked, so what is read is final; and then decide and write.
+	settlement, err := u.settle(ctx, transactions, pending, locked)
 	if err != nil {
 		return Output{}, "", err
 	}
@@ -262,6 +251,19 @@ func (u *UseCase) process(ctx context.Context, repos application.Repositories, i
 		outcome = OutcomeRejected
 	}
 	return Output{Transaction: settlement.Transaction}, outcome, nil
+}
+
+// settle applies the operation to the locked wallet.
+func (u *UseCase) settle(ctx context.Context, transactions application.TransactionRepository, pending wager.Transaction, locked wallet.Wallet) (wager.Settlement, error) {
+	external := pending.External()
+	if external.ReferenceExternalTransactionID == "" {
+		return pending.Settle(locked, u.deps.NewID(), u.deps.Now())
+	}
+	ref, err := transactions.ResolveReference(ctx, external.ProviderID, external.ReferenceExternalTransactionID)
+	if err != nil {
+		return wager.Settlement{}, err
+	}
+	return pending.SettleAgainst(ref, locked, u.deps.NewID(), u.deps.Now())
 }
 
 // rejectUnknownWallet stores the Rejection WALLET_NOT_FOUND. There is no wallet to
@@ -336,6 +338,7 @@ func (u *UseCase) publish(ctx context.Context, repos application.Repositories, i
 			TransactionID: tx.ID(), WalletID: tx.RequestedWalletID(), PlayerID: tx.PlayerID(), Kind: tx.Kind(),
 			ProviderID: external.ProviderID, ExternalTransactionID: external.ExternalTransactionID,
 			RoundID: external.RoundID, GameID: external.GameID, Money: tx.Amount(), FailureCode: tx.FailureCode(),
+			ReferenceExternalTransactionID: external.ReferenceExternalTransactionID,
 		})
 		if err != nil {
 			return err
@@ -346,7 +349,7 @@ func (u *UseCase) publish(ctx context.Context, repos application.Repositories, i
 		processed, err := event.NewWagerTransactionProcessed(meta(), event.WagerTransactionProcessedData{
 			TransactionID: tx.ID(), WalletID: tx.WalletID(), PlayerID: tx.PlayerID(), Kind: tx.Kind(), Origin: tx.Origin(),
 			ProviderID: external.ProviderID, ExternalTransactionID: external.ExternalTransactionID,
-			RoundID: external.RoundID, GameID: external.GameID,
+			RoundID: external.RoundID, GameID: external.GameID, ReferenceExternalTransactionID: external.ReferenceExternalTransactionID,
 			Money: tx.Amount(), Balance: result.Balance, WalletVersion: result.WalletVersion,
 		})
 		if err != nil {
@@ -413,7 +416,7 @@ func (u *UseCase) log(ctx context.Context, in Input, out Output, outcome Outcome
 	switch outcome {
 	case OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeDuplicateMessage:
 		u.deps.Logger.InfoContext(ctx, "wager request handled", attrs...)
-	case OutcomeKeyConflict, OutcomeDuplicateExternal, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnsupported:
+	case OutcomeKeyConflict, OutcomeDuplicateExternal, OutcomeMessageConflict, OutcomeInvalid:
 		u.deps.Logger.WarnContext(ctx, "wager request refused", append(attrs, slog.String("reason", outcomeReason(err)))...)
 	case OutcomeUnavailable:
 		u.deps.Logger.WarnContext(ctx, "wager request not processed: a dependency is unavailable", append(attrs, slog.Any("error", err))...)
@@ -431,10 +434,6 @@ func outcomeReason(err error) string {
 		return "duplicate external transaction"
 	case errors.Is(err, ErrMessageContentConflict):
 		return "message content conflict"
-	case errors.Is(err, ErrUnsupportedKind):
-		return "unsupported kind"
-	case errors.Is(err, ErrReferenceNotSupported):
-		return "unsupported reference"
 	case errors.Is(err, ErrInvalidInput):
 		return "invalid input"
 	}

@@ -90,6 +90,10 @@ func (t *txRepo) Find(context.Context, string, string, string) (application.Exis
 	panic("openwallet looks up no idempotency key")
 }
 
+func (t *txRepo) ResolveReference(context.Context, string, string) (wager.Reference, error) {
+	panic("openwallet resolves no reference")
+}
+
 func (t *txRepo) Claim(context.Context, wager.Transaction) (bool, error) {
 	panic("openwallet claims no idempotency key")
 }

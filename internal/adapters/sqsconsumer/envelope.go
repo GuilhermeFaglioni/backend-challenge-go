@@ -27,19 +27,17 @@ const maxMessageIDLength = 128
 type Reason string
 
 const (
-	ReasonMalformed       Reason = "malformed"             // not the JSON object of the envelope
-	ReasonUnknownType     Reason = "unknown_type"          // a type this consumer does not handle
-	ReasonInvalid         Reason = "invalid"               // a field the use case or the envelope refuses
-	ReasonUnsupportedKind Reason = "unsupported_kind"      // a valid kind not processed yet
-	ReasonUnsupportedRef  Reason = "unsupported_reference" // a reference, which is not resolved yet
-	ReasonKeyConflict     Reason = "key_conflict"          // the idempotency key was used with other content
-	ReasonDuplicateExtID  Reason = "duplicate_external"    // the external id was used under another key
-	ReasonMessageConflict Reason = "message_conflict"      // the message id was used with other content
+	ReasonMalformed       Reason = "malformed"          // not the JSON object of the envelope
+	ReasonUnknownType     Reason = "unknown_type"       // a type this consumer does not handle
+	ReasonInvalid         Reason = "invalid"            // a field the use case or the envelope refuses
+	ReasonKeyConflict     Reason = "key_conflict"       // the idempotency key was used with other content
+	ReasonDuplicateExtID  Reason = "duplicate_external" // the external id was used under another key
+	ReasonMessageConflict Reason = "message_conflict"   // the message id was used with other content
 )
 
 // Reasons lists every Reason, so a metric can start each at zero.
 var Reasons = []Reason{
-	ReasonMalformed, ReasonUnknownType, ReasonInvalid, ReasonUnsupportedKind, ReasonUnsupportedRef, ReasonKeyConflict, ReasonDuplicateExtID, ReasonMessageConflict,
+	ReasonMalformed, ReasonUnknownType, ReasonInvalid, ReasonKeyConflict, ReasonDuplicateExtID, ReasonMessageConflict,
 }
 
 // DecodeError is a message that cannot become a request. Detail says which field or

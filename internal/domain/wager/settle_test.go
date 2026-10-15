@@ -161,7 +161,7 @@ func TestSettlingIsRefusedWhenItCannotBeTheRightWalletOrTransaction(t *testing.T
 	})
 }
 
-func TestReversalsAreNotSettledYet(t *testing.T) {
+func TestAnOperationThatNamesAReferenceCannotBeSettledWithoutIt(t *testing.T) {
 	for _, kind := range []wager.Kind{wager.KindRefund, wager.KindRollback} {
 		p := betParams(t)
 		p.Kind = kind
@@ -169,9 +169,14 @@ func TestReversalsAreNotSettledYet(t *testing.T) {
 		tx, err := wager.New(wager.NewParams{ID: uuid.New(), Request: newRequest(t, p), IdempotencyKey: "k", CorrelationID: "c", At: at})
 		require.NoError(t, err)
 		_, err = tx.Settle(walletOf(t, 10000), uuid.New(), settleAt)
-		require.ErrorIs(t, err, wager.ErrKindNotSupported, kind)
+		require.ErrorIs(t, err, wager.ErrReferenceUnresolved, kind)
 	}
-	_, err := pendingOpening(t).Settle(walletOf(t, 10000), uuid.New(), settleAt)
+	win := winOf(t, 100, "transaction-100")
+	_, err := win.Settle(walletOf(t, 10000), uuid.New(), settleAt)
+	require.ErrorIs(t, err, wager.ErrReferenceUnresolved)
+	_, err = bet(t, 100).SettleAgainst(wager.Reference{}, walletOf(t, 10000), uuid.New(), settleAt)
+	require.ErrorIs(t, err, wager.ErrNoReference, "and an operation that names none has nothing to settle against")
+	_, err = pendingOpening(t).Settle(walletOf(t, 10000), uuid.New(), settleAt)
 	require.ErrorIs(t, err, wager.ErrKindNotSupported)
 }
 

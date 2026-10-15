@@ -441,3 +441,55 @@ func TestMixedOperationsAcrossThreeProcessesAddUpOnce(t *testing.T) {
 	require.NoError(t, g.h.owner.QueryRow(t.Context(), `SELECT version FROM wallets WHERE id = $1`, w.id).Scan(&version))
 	require.Equal(t, int64(1+rounds*2), version, "the opening, each bet and each win, once; no loss")
 }
+
+// --- reversals -----------------------------------------------------------------------
+
+func (g *guarantees) reverse(t *testing.T, instance *infra.Instance, w wallet, externalID, kind, amount, reference string) response {
+	t.Helper()
+	body := fmt.Sprintf(`{"providerId":"provider-a","externalTransactionId":%q,"referenceExternalTransactionId":%q,"playerId":%q,"walletId":%q,"roundId":"round-1","gameId":"game-1","kind":%q,"money":{"amount":%q,"currency":"BRL"}}`,
+		externalID, reference, w.player, w.id, kind, amount)
+	return g.post(t, instance, g.provider, "/wagering/transactions", "provider-a:"+externalID, body)
+}
+
+// A REFUND and a ROLLBACK of the same BET, sent to three processes at once, many times
+// each: exactly one takes effect, whichever wins, and the database's own index would have
+// refused a second. The books agree afterwards.
+func TestARefundAndARollbackOfOneBetAcrossThreeProcessesHaveOneEffect(t *testing.T) {
+	g := startGuarantees(t)
+	w := g.open(t, g.on(0), "100.00")
+	require.Equal(t, http.StatusOK, g.operation(t, g.on(1), w, "bet-1", "BET", "30.00").status)
+
+	const copies = 15
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	processed, refused := 0, 0
+	for i := range copies {
+		for _, kind := range []string{"REFUND", "ROLLBACK"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := g.reverse(t, g.on(i), w, fmt.Sprintf("%s-%d", kind, i), kind, "30.00", "bet-1")
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case r.status == http.StatusOK:
+					processed++
+				case r.status == http.StatusUnprocessableEntity && r.answer.FailureCode == "REFERENCE_ALREADY_REVERSED":
+					refused++
+				default:
+					t.Errorf("%s-%d answered %d %+v", kind, i, r.status, r.answer)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+
+	require.Equal(t, 1, processed)
+	require.Equal(t, 2*copies-1, refused)
+	balance, debits := g.books(t, w)
+	require.Equal(t, int64(10000), balance, "the stake came back once")
+	require.Equal(t, int64(3000), debits)
+	var reversals int
+	require.NoError(t, g.h.owner.QueryRow(t.Context(), `SELECT count(*) FROM wager_transactions WHERE kind IN ('REFUND','ROLLBACK') AND status = 'PROCESSED'`).Scan(&reversals))
+	require.Equal(t, 1, reversals)
+}

@@ -196,6 +196,24 @@ func (r *txRepo) Find(_ context.Context, provider, k, id string) (application.Ex
 	return found, nil
 }
 
+func (r *txRepo) ResolveReference(_ context.Context, provider, externalID string) (wager.Reference, error) {
+	db := (*memDB)(r)
+	if err := db.step("reference"); err != nil {
+		return wager.Reference{}, err
+	}
+	ref, found := db.byExt[key{provider, externalID}]
+	if !found {
+		return wager.Reference{}, nil
+	}
+	out := wager.Reference{Found: true, Transaction: ref}
+	for _, t := range db.byID {
+		if t.External().ReferenceTransactionID == ref.ID() && t.Status() == wager.StatusProcessed && (t.Kind() == wager.KindRefund || t.Kind() == wager.KindRollback) {
+			out.Reversed = true
+		}
+	}
+	return out, nil
+}
+
 func (r *txRepo) Claim(_ context.Context, t wager.Transaction) (bool, error) {
 	db := (*memDB)(r)
 	if db.beforeClaim != nil {
@@ -635,33 +653,6 @@ func TestInvalidInputNeverReachesTheDatabase(t *testing.T) {
 	}
 }
 
-func TestReversalsAreNotProcessedYetAndAreRefusedBeforeTheDatabase(t *testing.T) {
-	for _, kind := range []wager.Kind{wager.KindRefund, wager.KindRollback} {
-		f := newFixture(t, 10000)
-		in := betInput(2500)
-		in.Request.Kind = kind
-		in.Request.ReferenceExternalTransactionID = "transaction-100"
-		_, err := f.uc.Execute(t.Context(), in)
-		require.ErrorIs(t, err, processwager.ErrUnsupportedKind, kind)
-		require.Zero(t, f.db.uowRuns)
-		require.Equal(t, []processwager.Outcome{processwager.OutcomeUnsupported}, f.rec.outcomes())
-	}
-}
-
-func TestAWinThatNamesAReferenceIsRefusedBeforeTheDatabase(t *testing.T) {
-	f := newFixture(t, 10000)
-	in := betInput(2500)
-	in.Request.Kind = wager.KindWin
-	in.Request.ReferenceExternalTransactionID = "transaction-100"
-
-	_, err := f.uc.Execute(t.Context(), in)
-
-	require.ErrorIs(t, err, processwager.ErrReferenceNotSupported)
-	require.NotErrorIs(t, err, processwager.ErrUnsupportedKind)
-	require.Zero(t, f.db.uowRuns, "nothing is stored: it is not an answer, the provider sends it again later")
-	require.Equal(t, []processwager.Outcome{processwager.OutcomeUnsupported}, f.rec.outcomes())
-}
-
 // --- WIN and LOSS ---------------------------------------------------------------------
 
 func winInput(minor int64) processwager.Input {
@@ -996,4 +987,162 @@ func TestARequestWithoutAMessageDoesNotTouchTheInbox(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, f.db.inbox)
 	require.NotContains(t, f.db.calls, "inbox-receive")
+}
+
+// --- operations that name a Reference ---------------------------------------------------
+
+func reversalInput(kind wager.Kind, externalID, reference string, minor int64) processwager.Input {
+	in := betInput(minor)
+	in.Request.Kind = kind
+	in.Request.ExternalTransactionID = externalID
+	in.Request.ReferenceExternalTransactionID = reference
+	in.IdempotencyKey = "provider-a:" + externalID
+	return in
+}
+
+func mustExecute(t *testing.T, f *fixture, in processwager.Input) processwager.Output {
+	t.Helper()
+	out, err := f.uc.Execute(t.Context(), in)
+	require.NoError(t, err)
+	return out
+}
+
+func TestARefundResolvesItsReferenceAndCreditsInTheDocumentedOrder(t *testing.T) {
+	f := newFixture(t, 10000)
+	bet := mustExecute(t, f, betInput(2500))
+	f.db.calls = nil
+
+	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+
+	require.Equal(t, []string{"find", "lock", "claim", "reference", "update", "ledger", "finish", "outbox", "outbox"}, f.db.calls,
+		"the Reference is read after the wallet is locked, and nothing is written before it is judged")
+	require.Equal(t, wager.StatusProcessed, out.Transaction.Status())
+	require.Equal(t, int64(10000), f.balance())
+	require.Equal(t, bet.Transaction.ID(), f.db.byID[out.Transaction.ID()].External().ReferenceTransactionID, "the resolved Reference is stored")
+	last := f.db.events[len(f.db.events)-2:]
+	require.Equal(t, []string{"WagerTransactionProcessed", "WalletBalanceChanged"}, types(last))
+	require.Contains(t, string(mustJSON(t, last[0])), `"referenceExternalTransactionId":"transaction-123"`)
+}
+
+func mustJSON(t *testing.T, e event.Event) []byte {
+	t.Helper()
+	data, err := e.DataJSON()
+	require.NoError(t, err)
+	return data
+}
+
+func TestARefusedReversalIsStoredWithTheReferenceItResolvedAndMovesNothing(t *testing.T) {
+	f := newFixture(t, 10000)
+	bet := mustExecute(t, f, betInput(2500))
+	entries := len(f.db.entries)
+
+	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 999))
+
+	require.Equal(t, wager.StatusRejected, out.Transaction.Status())
+	require.Equal(t, wager.FailureReferenceAmountMismatch, out.Transaction.FailureCode())
+	require.Equal(t, bet.Transaction.ID(), f.db.byID[out.Transaction.ID()].External().ReferenceTransactionID)
+	require.Equal(t, int64(7500), f.balance())
+	require.Len(t, f.db.entries, entries)
+	require.Equal(t, "WagerTransactionRejected", types(f.db.events)[len(f.db.events)-1])
+	require.Contains(t, string(mustJSON(t, f.db.events[len(f.db.events)-1])), `"referenceExternalTransactionId":"transaction-123"`)
+}
+
+func TestAMissingReferenceIsAStoredRejectionForNow(t *testing.T) {
+	f := newFixture(t, 10000)
+
+	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "never-seen", 2500))
+
+	require.Equal(t, wager.FailureReferenceNotFound, out.Transaction.FailureCode())
+	require.Equal(t, uuid.Nil, f.db.byID[out.Transaction.ID()].External().ReferenceTransactionID)
+	require.Equal(t, int64(10000), f.balance())
+}
+
+func TestAReversalIsReplayedAndConflictsLikeAnyOperation(t *testing.T) {
+	f := newFixture(t, 10000)
+	mustExecute(t, f, betInput(2500))
+	in := reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500)
+	first := mustExecute(t, f, in)
+	entries, events := len(f.db.entries), len(f.db.events)
+
+	again := mustExecute(t, f, in)
+
+	require.True(t, again.IdempotentReplay)
+	require.Equal(t, first.Transaction.ID(), again.Transaction.ID())
+	require.Len(t, f.db.entries, entries)
+	require.Len(t, f.db.events, events)
+
+	other := in
+	other.Request.ReferenceExternalTransactionID = "something-else"
+	_, err := f.uc.Execute(t.Context(), other)
+	require.ErrorIs(t, err, processwager.ErrIdempotencyKeyConflict, "the Reference is part of what was asked")
+}
+
+func TestARefundAndARollbackOfTheSameBetHaveOneEffect(t *testing.T) {
+	f := newFixture(t, 10000)
+	mustExecute(t, f, betInput(2500))
+
+	refund := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+	rollback := mustExecute(t, f, reversalInput(wager.KindRollback, "rollback-1", "transaction-123", 2500))
+
+	require.Equal(t, wager.StatusProcessed, refund.Transaction.Status())
+	require.Equal(t, wager.FailureReferenceAlreadyReversed, rollback.Transaction.FailureCode())
+	require.Equal(t, int64(10000), f.balance(), "the stake came back once")
+	require.Len(t, f.db.entries, 2)
+}
+
+func TestARollbackOfARefundDoesNotReopenTheBet(t *testing.T) {
+	f := newFixture(t, 10000)
+	mustExecute(t, f, betInput(2500))
+	mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+
+	undone := mustExecute(t, f, reversalInput(wager.KindRollback, "rollback-1", "refund-1", 2500))
+	again := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-2", "transaction-123", 2500))
+	twice := mustExecute(t, f, reversalInput(wager.KindRollback, "rollback-2", "refund-1", 2500))
+	ofRollback := mustExecute(t, f, reversalInput(wager.KindRollback, "rollback-3", "rollback-1", 2500))
+
+	require.Equal(t, wager.StatusProcessed, undone.Transaction.Status())
+	require.Equal(t, int64(7500), f.balance(), "the refund was taken back")
+	require.Equal(t, wager.FailureReferenceAlreadyReversed, again.Transaction.FailureCode(), "the BET stays reversed")
+	require.Equal(t, wager.FailureReferenceAlreadyReversed, twice.Transaction.FailureCode(), "and so does the REFUND")
+	require.Equal(t, wager.FailureReferenceKindInvalid, ofRollback.Transaction.FailureCode(), "a ROLLBACK is not undone")
+}
+
+func TestARollbackOfASpentWinIsRefusedForTheReversalsOwnCode(t *testing.T) {
+	f := newFixture(t, 1000)
+	win := winInput(2500)
+	mustExecute(t, f, win)
+	mustExecute(t, f, betInput(3000)) // spends the prize
+
+	out := mustExecute(t, f, reversalInput(wager.KindRollback, "rollback-1", "transaction-win", 2500))
+
+	require.Equal(t, wager.FailureReversalInsufficientFunds, out.Transaction.FailureCode())
+	require.Equal(t, int64(500), f.balance())
+}
+
+func TestAWinNamingItsBetIsAcceptedAndNeverCountsAsAReversal(t *testing.T) {
+	f := newFixture(t, 10000)
+	mustExecute(t, f, betInput(2500))
+	win := winInput(9000)
+	win.Request.ReferenceExternalTransactionID = "transaction-123"
+
+	out := mustExecute(t, f, win)
+	refund := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+
+	require.Equal(t, wager.StatusProcessed, out.Transaction.Status())
+	require.Equal(t, wager.StatusProcessed, refund.Transaction.Status(), "the WIN did not use up the BET's one reversal")
+	require.Equal(t, int64(19000), f.balance())
+}
+
+func TestWhateverFailsWhileResolvingAReferenceRollsEverythingBack(t *testing.T) {
+	f := newFixture(t, 10000)
+	mustExecute(t, f, betInput(2500))
+	f.db.failAt = "reference"
+
+	_, err := f.uc.Execute(t.Context(), reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+
+	require.ErrorIs(t, err, errInjected)
+	require.Equal(t, int64(7500), f.balance())
+	f.db.failAt = ""
+	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+	require.Equal(t, wager.StatusProcessed, out.Transaction.Status(), "and the same request works once the failure is gone")
 }
