@@ -23,7 +23,8 @@ func validConfig() Config {
 			DiscoveryURL: "http://keycloak:8080/realms/wagering",
 			Audience:     "wallet-api",
 		},
-		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second},
+		Outbox:    Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second},
+		Retention: Retention{Inbox: 336 * time.Hour, Outbox: 168 * time.Hour, Interval: time.Hour, BatchSize: 10000},
 		PendingReference: PendingReference{
 			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute, MaxErrors: 5,
 			PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second,
@@ -70,6 +71,11 @@ func TestValidate(t *testing.T) {
 			c.SQS.Consumer.Credentials = Credentials{AccessKeyID: "a", SecretAccessKey: "b"}
 			c.SQS.Publisher.Credentials = Credentials{AccessKeyID: "c", SecretAccessKey: "d"}
 		}},
+		{name: "inbox kept less than a week", mutate: func(c *Config) { c.Retention.Inbox = 167 * time.Hour }, wantErr: "RETENTION_INBOX"},
+		{name: "inbox kept exactly a week", mutate: func(c *Config) { c.Retention.Inbox = 168 * time.Hour }},
+		{name: "outbox kept less than a day", mutate: func(c *Config) { c.Retention.Outbox = 23 * time.Hour }, wantErr: "RETENTION_OUTBOX"},
+		{name: "no retention interval", mutate: func(c *Config) { c.Retention.Interval = 0 }, wantErr: "RETENTION_INTERVAL"},
+		{name: "no retention batch", mutate: func(c *Config) { c.Retention.BatchSize = 0 }, wantErr: "RETENTION_BATCH_SIZE"},
 		{name: "relative issuer", mutate: func(c *Config) { c.OIDC.IssuerURL = "/realms/wagering" }, wantErr: "OIDC_ISSUER_URL"},
 		{name: "bad aws endpoint", mutate: func(c *Config) { c.AWS.EndpointURL = "localhost:4566" }, wantErr: "AWS_ENDPOINT_URL"},
 		{name: "empty audience", mutate: func(c *Config) { c.OIDC.Audience = "" }, wantErr: "OIDC_AUDIENCE"},
@@ -252,5 +258,18 @@ func TestComponentCredentialsComeFromTheEnvironment(t *testing.T) {
 	}
 	if cfg.SQS.Consumer.Credentials != (Credentials{AccessKeyID: "ck", SecretAccessKey: "cs"}) || cfg.SQS.Publisher.Credentials != (Credentials{AccessKeyID: "pk", SecretAccessKey: "ps"}) {
 		t.Fatalf("got %+v %+v", cfg.SQS.Consumer.Credentials, cfg.SQS.Publisher.Credentials)
+	}
+}
+
+func TestRetentionDefaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Retention != validConfig().Retention {
+		t.Fatalf("got %+v", cfg.Retention)
 	}
 }
