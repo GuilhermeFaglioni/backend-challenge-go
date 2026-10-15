@@ -5,7 +5,6 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -145,14 +144,11 @@ func TestAForcedDivergenceIsReportedLoggedAndCounted(t *testing.T) {
 		require.True(t, result.Consistent)
 	})
 
-	resp, err := http.Get(a.base + "/metrics") //nolint:noctx // a test fixture request
+	metrics, err := kc.Scrape(t.Context(), a.base)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	metrics, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Contains(t, string(metrics), "reconciliation_divergences_total 2", "the two divergent checks, not the healthy one")
-	require.Contains(t, string(metrics), `reconciliations_total{result="divergent"} 2`)
-	require.Contains(t, string(metrics), `reconciliations_total{result="consistent"} 1`)
+	require.Contains(t, metrics, "reconciliation_divergences_total 2", "the two divergent checks, not the healthy one")
+	require.Contains(t, metrics, `reconciliations_total{result="divergent"} 2`)
+	require.Contains(t, metrics, `reconciliations_total{result="consistent"} 1`)
 	a.strict.requireNoViolations()
 }
 

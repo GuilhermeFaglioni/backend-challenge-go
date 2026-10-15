@@ -221,6 +221,18 @@ trap 'rm -f "$SMOKE_BODY"' EXIT
   || fail "POST /wallets with a provider token is not 403"
 ok "wallet endpoints refuse a missing token (401) and a provider token (403)"
 
+# The metrics are not public: only the metrics-scraper client (role monitoring) reads them.
+metrics_token=$(curl -fsS -X POST "${REALM_URL}/protocol/openid-connect/token" \
+  -d grant_type=client_credentials \
+  -d client_id=metrics-scraper \
+  -d client_secret=metrics-scraper-local-secret | json_get access_token) || fail "keycloak refused the metrics-scraper client_credentials request"
+[ -n "$metrics_token" ] || fail "no access token for metrics-scraper"
+[ "$(api_status GET "$first_port" /metrics "")" = "401" ] || fail "GET /metrics without a token is not 401"
+[ "$(api_status GET "$first_port" /metrics "$internal_token")" = "403" ] || fail "GET /metrics with an internal token is not 403"
+[ "$(api_status GET "$first_port" /metrics "$metrics_token")" = "200" ] || fail "GET /metrics with the metrics-scraper token is not 200"
+grep -q '^outbox_published_total ' "$SMOKE_BODY" || fail "GET /metrics did not return the Prometheus metrics"
+ok "/metrics answers only the monitoring role (401 without a token, 403 for internal, 200 for metrics-scraper)"
+
 status=$(api_status POST "$first_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "201" ] || fail "POST /wallets with an internal token answered ${status}: $(cat "$SMOKE_BODY")"
 wallet_id=$(json_get id < "$SMOKE_BODY")

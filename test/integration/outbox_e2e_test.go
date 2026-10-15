@@ -188,16 +188,11 @@ func TestAnOpenedWalletsEventsReachTheQueueInOrderAsTheStoredSnapshots(t *testin
 	require.Equal(t, []string{"WagerTransactionProcessed", "WalletBalanceChanged"}, types)
 
 	t.Run("the metrics say so", func(t *testing.T) {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, app.base+"/metrics", nil)
+		body, err := kc.Scrape(t.Context(), app.base)
 		require.NoError(t, err)
-		resp, err := app.client.Do(req)
-		require.NoError(t, err)
-		defer func() { _ = resp.Body.Close() }()
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		require.Contains(t, string(body), "outbox_published_total 2")
-		require.Contains(t, string(body), "outbox_publish_failures_total 0")
-		require.Contains(t, string(body), "outbox_lag_seconds")
+		require.Contains(t, body, "outbox_published_total 2")
+		require.Contains(t, body, "outbox_publish_failures_total 0")
+		require.Contains(t, body, "outbox_lag_seconds")
 	})
 }
 

@@ -114,13 +114,39 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "metrics-scraper",
+      "name": "Metrics scraper",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "metrics-scraper-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "wallet-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "wallet-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "roles": {
     "client": {
       "wallet-api": [
         { "name": "provider", "description": "Submits and reads its own wagering transactions" },
-        { "name": "internal", "description": "Opens, reads and reconciles wallets" }
+        { "name": "internal", "description": "Opens, reads and reconciles wallets" },
+        { "name": "monitoring", "description": "Reads the service metrics" }
       ]
     }
   },
@@ -142,6 +168,12 @@
       "enabled": true,
       "serviceAccountClientId": "internal-service",
       "clientRoles": { "wallet-api": ["internal"] }
+    },
+    {
+      "username": "service-account-metrics-scraper",
+      "enabled": true,
+      "serviceAccountClientId": "metrics-scraper",
+      "clientRoles": { "wallet-api": ["monitoring"] }
     }
   ]
 }

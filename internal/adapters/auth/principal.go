@@ -18,9 +18,11 @@ const (
 	RoleProvider Role = "provider"
 	// RoleInternal is the internal service: wallet operations.
 	RoleInternal Role = "internal"
+	// RoleMonitoring is the metrics scraper: it may only read /metrics.
+	RoleMonitoring Role = "monitoring"
 )
 
-var knownRoles = []Role{RoleProvider, RoleInternal}
+var knownRoles = []Role{RoleProvider, RoleInternal, RoleMonitoring}
 
 // Principal is the authenticated caller. It is immutable.
 type Principal struct {
