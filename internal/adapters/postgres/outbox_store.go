@@ -30,13 +30,17 @@ func NewOutboxStore(pool *pgxpool.Pool) *OutboxStore { return &OutboxStore{pool:
 
 var _ application.OutboxStore = (*OutboxStore)(nil)
 
-// reserveSQL leases the oldest due events. SKIP LOCKED lets any number of publishers
-// run it at once without waiting for each other or taking the same row. The NOT EXISTS
-// makes an event wait for every earlier unpublished event of its wallet (including
-// ones leased by another publisher), which is what keeps a wallet's events in order.
+// reserveSQL leases the oldest due wallets and a run of their events. A wallet's head is
+// its oldest unpublished event; the NOT EXISTS makes a head wait for every earlier
+// unpublished event of its wallet (including ones leased by another publisher), which is
+// what keeps a wallet in one publisher's hands at a time and its events in order. SKIP
+// LOCKED lets any number of publishers run it at once without waiting for each other or
+// taking the same head. The chain then adds the events that follow each head, up to
+// depth: nobody else can hold them, because none of them is a head while the head is
+// unpublished.
 const reserveSQL = `
-WITH due AS (
-	SELECT e.event_id
+WITH heads AS (
+	SELECT e.event_id, e.aggregate_id, e.seq
 	FROM outbox e
 	WHERE e.published_at IS NULL
 	  AND e.next_attempt_at <= now()
@@ -48,16 +52,24 @@ WITH due AS (
 		  AND earlier.seq < e.seq)
 	ORDER BY e.seq
 	LIMIT $1
-	FOR UPDATE OF e SKIP LOCKED)
+	FOR UPDATE OF e SKIP LOCKED),
+chain AS (
+	SELECT c.event_id
+	FROM heads h
+	CROSS JOIN LATERAL (
+		SELECT o.event_id FROM outbox o
+		WHERE o.aggregate_id = h.aggregate_id AND o.published_at IS NULL AND o.seq >= h.seq
+		ORDER BY o.seq
+		LIMIT $3) c)
 UPDATE outbox o
 SET locked_until = now() + make_interval(secs => $2)
-FROM due
-WHERE o.event_id = due.event_id
+FROM chain
+WHERE o.event_id = chain.event_id
 RETURNING o.seq, o.event_id, o.aggregate_id, o.event_type, o.version, o.payload,
           o.correlation_id, o.causation_id, o.occurred_at, o.attempts`
 
-func (s *OutboxStore) Reserve(ctx context.Context, limit int, lease time.Duration) ([]application.OutboxEntry, error) {
-	rows, err := s.pool.Query(ctx, reserveSQL, limit, lease.Seconds())
+func (s *OutboxStore) Reserve(ctx context.Context, wallets, depth int, lease time.Duration) ([]application.OutboxEntry, error) {
+	rows, err := s.pool.Query(ctx, reserveSQL, wallets, lease.Seconds(), max(depth, 1))
 	if err != nil {
 		return nil, markTransient(fmt.Errorf("reserve outbox events: %w", err))
 	}
