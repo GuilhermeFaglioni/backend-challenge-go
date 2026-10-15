@@ -265,10 +265,10 @@ func TestARouteCannotBePublicUnlessItIsOnTheAllowlist(t *testing.T) {
 	r := newRoutes()
 	h := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 
-	for _, pattern := range []string{"GET /health/live", "GET /health/ready", "GET /metrics", "GET /openapi.yaml"} {
+	for _, pattern := range []string{"GET /health/live", "GET /health/ready", "GET /openapi.yaml"} {
 		require.NotPanics(t, func() { r.Public(pattern, h) }, pattern)
 	}
-	for _, pattern := range []string{"POST /wallets", "GET /wallets/{id}", "GET /health/secret", "GET /metrics/all", "/health/live"} {
+	for _, pattern := range []string{"POST /wallets", "GET /wallets/{id}", "GET /health/secret", "GET /metrics", "GET /metrics/all", "/health/live"} {
 		require.Panics(t, func() { r.Public(pattern, h) }, "%q is not on the allowlist of public routes", pattern)
 	}
 }
@@ -374,6 +374,33 @@ func TestTheApplicationsRouteTableBuilds(t *testing.T) {
 		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewWagering(&fakeProcessor{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewTransactions(&scopedReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewLedger(&fakeLedger{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewReconciliation(&fakeReconciler{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
 	})
 	require.NotEmpty(t, r.Registered())
+}
+
+// The metrics describe the traffic and the books of every wallet: only the
+// monitoring role reads them, not the clients that operate wallets.
+func TestOnlyTheMonitoringRoleReadsTheMetrics(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	authn := fakeAuthenticator{
+		"provider-token":   {principal: providerA},
+		"internal-token":   {principal: internal},
+		"monitoring-token": {principal: auth.NewPrincipal("sub-m", "metrics-scraper", "", auth.RoleMonitoring)},
+	}
+	r := NewRoutes(authn, logger, prometheus.NewRegistry())
+	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger), NewLedger(&fakeLedger{}, &fakeReader{}, logger), NewReconciliation(&fakeReconciler{}, logger))
+
+	get := func(token string) int {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		r.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	require.Equal(t, http.StatusUnauthorized, get(""))
+	require.Equal(t, http.StatusForbidden, get("provider-token"))
+	require.Equal(t, http.StatusForbidden, get("internal-token"))
+	require.Equal(t, http.StatusOK, get("monitoring-token"))
 }
 
 // The OpenAPI document and the routes the application registers describe the same

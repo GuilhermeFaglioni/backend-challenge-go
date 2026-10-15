@@ -50,7 +50,8 @@ bash .github/scripts/smoke.sh
 | `POST /wagering/transactions` | `provider` | enviar uma operação (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`), com `Idempotency-Key` |
 | `GET /wagering/transactions/{transactionId}` | `provider`, `internal` | ler uma transação pelo id |
 | `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | `provider`, `internal` | ler pelo id externo |
-| `GET /health/live`, `GET /health/ready`, `GET /metrics`, `GET /openapi.yaml` | nenhum | saúde, métricas e o contrato |
+| `GET /metrics` | `monitoring` | métricas no formato do Prometheus |
+| `GET /health/live`, `GET /health/ready`, `GET /openapi.yaml` | nenhum | saúde e o contrato |
 
 O contrato da API é [api/openapi.yaml](api/openapi.yaml), escrito à mão, embutido no binário e servido em `GET /openapi.yaml`. A API usa JSON, valores monetários em string com duas casas (`"100.00"`) e erros no formato `{"error":{"code":...,"message":...}}`. Os endpoints de carteira exigem o papel `internal`.
 
@@ -122,8 +123,27 @@ curl -s localhost:8081/health/live
 curl -s localhost:8081/health/ready
 ```
 
+As métricas exigem um token do cliente `metrics-scraper` (papel `monitoring`, secret `metrics-scraper-local-secret`); nenhum outro papel as lê:
+
 ```bash
-curl -s localhost:8081/metrics
+METRICS_TOKEN=$(curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=metrics-scraper -d client_secret=metrics-scraper-local-secret | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+```bash
+curl -s localhost:8081/metrics -H "Authorization: Bearer $METRICS_TOKEN"
+```
+
+Um Prometheus faz o mesmo com a configuração `oauth2` do `scrape_config`, que obtém e renova o token sozinho:
+
+```yaml
+scrape_configs:
+  - job_name: wagering
+    oauth2:
+      client_id: metrics-scraper
+      client_secret_file: /etc/prometheus/metrics-scraper.secret
+      token_url: http://keycloak:8080/realms/wagering/protocol/openid-connect/token
+    static_configs:
+      - targets: [app-1:8080, app-2:8080, app-3:8080]
 ```
 
 ```bash

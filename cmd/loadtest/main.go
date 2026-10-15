@@ -127,6 +127,11 @@ func run(ctx context.Context, cfg config) (report, error) {
 	if err != nil {
 		return report{}, err
 	}
+	// The metrics are read with a client of their own: only role monitoring may.
+	monitoring, err := token(ctx, client, cfg.keycloak, "metrics-scraper", "metrics-scraper-local-secret")
+	if err != nil {
+		return report{}, err
+	}
 
 	wallets := cfg.concurrency
 	if cfg.scenario == "hot" {
@@ -153,7 +158,7 @@ func run(ctx context.Context, cfg config) (report, error) {
 		}
 	}
 
-	before, err := scrapeAll(ctx, client, cfg.targets)
+	before, err := scrapeAll(ctx, client, cfg.targets, monitoring)
 	if err != nil {
 		return report{}, err
 	}
@@ -201,7 +206,7 @@ func run(ctx context.Context, cfg config) (report, error) {
 		eventsBefore = outbox.written(ctx)
 		go outbox.sample(runCtx, &lagMax, &backlogMax)
 	} else {
-		go sampleLag(runCtx, client, cfg.targets, &lagMax)
+		go sampleLag(runCtx, client, cfg.targets, monitoring, &lagMax)
 	}
 
 	started := time.Now()
@@ -241,7 +246,7 @@ func run(ctx context.Context, cfg config) (report, error) {
 		eventsWritten = outbox.written(ctx) - eventsBefore
 		drain = outbox.waitDrained(ctx, cfg.drainWithin)
 	} else {
-		drain = waitOutboxDrained(ctx, client, cfg.targets, time.Minute)
+		drain = waitOutboxDrained(ctx, client, cfg.targets, monitoring, time.Minute)
 	}
 	drainMs := float64(time.Since(drainStarted).Milliseconds())
 	left := 0
@@ -255,7 +260,7 @@ func run(ctx context.Context, cfg config) (report, error) {
 		}
 	}
 
-	after, err := scrapeAll(ctx, client, cfg.targets)
+	after, err := scrapeAll(ctx, client, cfg.targets, monitoring)
 	if err != nil {
 		return report{}, err
 	}
@@ -404,8 +409,8 @@ func token(ctx context.Context, client *http.Client, keycloak, clientID, secret 
 // samples are the series of one scrape: "name{labels}" -> value.
 type samples map[string]float64
 
-func scrape(ctx context.Context, client *http.Client, target string) (samples, error) {
-	data, status, err := do(ctx, client, http.MethodGet, target+"/metrics", "", "", nil)
+func scrape(ctx context.Context, client *http.Client, target, token string) (samples, error) {
+	data, status, err := do(ctx, client, http.MethodGet, target+"/metrics", token, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("scrape %s: %w", target, err)
 	}
@@ -430,10 +435,10 @@ func scrape(ctx context.Context, client *http.Client, target string) (samples, e
 	return out, nil
 }
 
-func scrapeAll(ctx context.Context, client *http.Client, targets []string) ([]samples, error) {
+func scrapeAll(ctx context.Context, client *http.Client, targets []string, token string) ([]samples, error) {
 	var all []samples
 	for _, t := range targets {
-		s, err := scrape(ctx, client, t)
+		s, err := scrape(ctx, client, t, token)
 		if err != nil {
 			return nil, err
 		}
@@ -458,7 +463,7 @@ func delta(before, after []samples, metric string) map[string]int {
 	return out
 }
 
-func sampleLag(ctx context.Context, client *http.Client, targets []string, max *atomic.Uint64) {
+func sampleLag(ctx context.Context, client *http.Client, targets []string, token string, max *atomic.Uint64) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -468,7 +473,7 @@ func sampleLag(ctx context.Context, client *http.Client, targets []string, max *
 		case <-tick.C:
 		}
 		for _, t := range targets {
-			s, err := scrape(ctx, client, t)
+			s, err := scrape(ctx, client, t, token)
 			if err != nil {
 				continue
 			}
@@ -480,12 +485,12 @@ func sampleLag(ctx context.Context, client *http.Client, targets []string, max *
 }
 
 // waitOutboxDrained waits until no event is waiting to be published, as the instances see it.
-func waitOutboxDrained(ctx context.Context, client *http.Client, targets []string, within time.Duration) bool {
+func waitOutboxDrained(ctx context.Context, client *http.Client, targets []string, token string, within time.Duration) bool {
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		drained := true
 		for _, t := range targets {
-			s, err := scrape(ctx, client, t)
+			s, err := scrape(ctx, client, t, token)
 			if err != nil || s["outbox_lag_seconds"] > 0 {
 				drained = false
 			}

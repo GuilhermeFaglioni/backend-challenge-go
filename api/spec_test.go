@@ -30,7 +30,7 @@ func TestTheDocumentIsAValidOpenAPIDocument(t *testing.T) {
 func TestEveryOperationStatesItsSecurity(t *testing.T) {
 	doc := load(t)
 	require.NotNil(t, doc.Security, "a document-wide default is required")
-	public := map[string]bool{"/health/live": true, "/health/ready": true, "/metrics": true, "/openapi.yaml": true}
+	public := map[string]bool{"/health/live": true, "/health/ready": true, "/openapi.yaml": true}
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
 			if public[path] {

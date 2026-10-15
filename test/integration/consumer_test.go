@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -107,12 +106,9 @@ func (a *consumerAPI) debits(t *testing.T, w apiWallet) int {
 
 func (a *consumerAPI) metric(t *testing.T, series string) float64 {
 	t.Helper()
-	resp, err := http.Get(a.base + "/metrics") //nolint:noctx // a test fixture request
+	text, err := kc.Scrape(t.Context(), a.base)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	text, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	for _, line := range strings.Split(string(text), "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(line, series+" ") {
 			var v float64
 			_, err := fmt.Sscanf(strings.TrimPrefix(line, series+" "), "%g", &v)

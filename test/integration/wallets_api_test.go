@@ -121,10 +121,20 @@ func TestWalletEndpointsFollowTheOpenAPIContract(t *testing.T) {
 	status, _, body = a.strict.call(ctx, http.MethodPost, a.base+"/wallets", a.internal, openBody(uuid.New(), "0.00", "USD"))
 	require.Equal(t, http.StatusCreated, status, body)
 
-	for _, path := range []string{"/health/live", "/health/ready", "/openapi.yaml", "/metrics"} {
+	for _, path := range []string{"/health/live", "/health/ready", "/openapi.yaml"} {
 		status, _, _ = a.strict.call(ctx, http.MethodGet, a.base+path, "", "")
 		require.Equal(t, http.StatusOK, status, path)
 	}
+
+	// The metrics are not public: only the monitoring role reads them.
+	monitoring, err := kc.Token(ctx, infra.MetricsClientID, infra.MetricsSecret)
+	require.NoError(t, err)
+	status, _, _ = a.strict.call(ctx, http.MethodGet, a.base+"/metrics", "", "")
+	require.Equal(t, http.StatusUnauthorized, status)
+	status, _, _ = a.strict.call(ctx, http.MethodGet, a.base+"/metrics", a.internal, "")
+	require.Equal(t, http.StatusForbidden, status)
+	status, _, _ = a.strict.call(ctx, http.MethodGet, a.base+"/metrics", monitoring, "")
+	require.Equal(t, http.StatusOK, status)
 
 	a.strict.requireNoViolations()
 }

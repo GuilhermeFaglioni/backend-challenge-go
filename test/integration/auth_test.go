@@ -19,6 +19,7 @@ import (
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/httpapi"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/test/infra"
 )
 
 const (
@@ -73,6 +74,11 @@ func TestRealTokensYieldTheExpectedPrincipals(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, internalPrincipal.ProviderID())
 	require.Equal(t, []auth.Role{auth.RoleInternal}, internalPrincipal.Roles())
+
+	monitoring, err := v.Verify(t.Context(), token(t, infra.MetricsClientID, infra.MetricsSecret))
+	require.NoError(t, err)
+	require.Empty(t, monitoring.ProviderID())
+	require.Equal(t, []auth.Role{auth.RoleMonitoring}, monitoring.Roles())
 }
 
 func TestARealTokenExpiresWhenTheClockMovesOn(t *testing.T) {

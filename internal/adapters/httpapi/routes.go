@@ -30,7 +30,6 @@ const retryAfterSeconds = "5"
 var publicRoutes = map[string]bool{
 	"GET /health/live":  true,
 	"GET /health/ready": true,
-	"GET /metrics":      true,
 	"GET /openapi.yaml": true,
 }
 
@@ -223,7 +222,7 @@ func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wa
 		}
 		writeJSON(w, status, report)
 	}))
-	r.Public("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	r.Protected("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}), auth.RoleMonitoring)
 	r.Public("GET /openapi.yaml", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(api.OpenAPI)

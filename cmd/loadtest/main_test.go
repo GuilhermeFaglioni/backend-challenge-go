@@ -49,7 +49,13 @@ func TestMetricsAreScrapedAndTheGrowthOfALabelledSeriesIsSummedOverInstances(t *
 			"outbox_lag_seconds 1.5\n\n"
 	}
 	respond := func(text *string) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(*text)) }))
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer scraper-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(*text))
+		}))
 	}
 	a, b := body("1", "0"), body("2", "5")
 	srvA, srvB := respond(&a), respond(&b)
@@ -57,7 +63,7 @@ func TestMetricsAreScrapedAndTheGrowthOfALabelledSeriesIsSummedOverInstances(t *
 	defer srvB.Close()
 	targets := []string{srvA.URL, srvB.URL}
 
-	before, err := scrapeAll(context.Background(), http.DefaultClient, targets)
+	before, err := scrapeAll(context.Background(), http.DefaultClient, targets, "scraper-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,9 +71,13 @@ func TestMetricsAreScrapedAndTheGrowthOfALabelledSeriesIsSummedOverInstances(t *
 		t.Errorf("a series without labels was not read: %v", before[0])
 	}
 	a, b = body("4", "0"), body("2", "9")
-	after, err := scrapeAll(context.Background(), http.DefaultClient, targets)
+	after, err := scrapeAll(context.Background(), http.DefaultClient, targets, "scraper-token")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if _, err := scrapeAll(context.Background(), http.DefaultClient, targets, ""); err == nil {
+		t.Error("the metrics are protected: a scrape without the token must fail")
 	}
 
 	got := delta(before, after, "db_transaction_retries_total")
@@ -79,7 +89,7 @@ func TestMetricsAreScrapedAndTheGrowthOfALabelledSeriesIsSummedOverInstances(t *
 func TestAnInstanceThatDoesNotAnswerMetricsIsAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
 	defer srv.Close()
-	if _, err := scrape(context.Background(), http.DefaultClient, srv.URL); err == nil {
+	if _, err := scrape(context.Background(), http.DefaultClient, srv.URL, "scraper-token"); err == nil {
 		t.Fatal("a failing scrape must not look like zero")
 	}
 }

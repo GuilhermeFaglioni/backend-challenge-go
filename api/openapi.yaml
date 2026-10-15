@@ -7,8 +7,8 @@ info:
 
     Every endpoint except the health checks and this document requires a bearer
     token obtained from Keycloak with the OAuth 2.0 `client_credentials` grant. The
-    role the token carries (`provider` or `internal`) decides what it may call; the
-    role is listed on each operation.
+    role the token carries (`provider`, `internal` or `monitoring`) decides what it
+    may call; the role is listed on each operation.
 
     This file is written by hand and is the source of truth of the HTTP contract:
     the integration tests validate every real request and response against it.
@@ -26,7 +26,7 @@ tags:
   - name: Wallets
     description: Opening and reading wallets. Role `internal`.
   - name: Operations
-    description: Health checks and this document. No credentials needed.
+    description: Health checks and this document, with no credentials; the metrics, with role `monitoring`.
 
 security:
   - clientCredentials: []
@@ -518,14 +518,18 @@ paths:
       tags: [Operations]
       operationId: metrics
       summary: Prometheus metrics
-      description: Open on the internal network of the Compose environment (see the limitations in ARCHITECTURE.md).
-      security: []
+      description: |
+        Role `monitoring` only: the client `metrics-scraper`. A Prometheus server
+        scrapes it with its `oauth2` client credentials configuration (see README).
       responses:
         '200':
           description: Metrics in the Prometheus text format.
           content:
             text/plain:
               schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /openapi.yaml:
     get:
@@ -548,8 +552,9 @@ components:
       type: oauth2
       description: |
         Token from Keycloak with the `client_credentials` grant. The local clients are
-        `provider-a`, `provider-b` (role `provider`) and `internal-service` (role
-        `internal`); their secrets are in the README.
+        `provider-a`, `provider-b` (role `provider`), `internal-service` (role
+        `internal`) and `metrics-scraper` (role `monitoring`); their secrets are in
+        the README.
       flows:
         clientCredentials:
           tokenUrl: http://localhost:8180/realms/wagering/protocol/openid-connect/token
