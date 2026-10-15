@@ -83,7 +83,6 @@ O texto completo está em ARCHITECTURE §17. Em resumo:
 - O teste de carga (opcional) foi feito e está em [LOAD_TEST.md](LOAD_TEST.md), com a ressalva de que mede ordens de grandeza num notebook e de que uma carteira só é publicada na outbox a ~20 eventos/s. Ficaram de fora partidas dobradas, tracing e dashboards.
 - A inbox e a outbox não têm política de retenção, e a outbox publica no máximo ~20 eventos/s por carteira.
 - A reconciliação soma o ledger inteiro; o custo cresce com o número de lançamentos.
-- O estado `FAILED` existe, mas nenhum caminho o produz hoje.
 - `/metrics` não é autenticado; os tokens locais usam `http`.
 
 ## Release

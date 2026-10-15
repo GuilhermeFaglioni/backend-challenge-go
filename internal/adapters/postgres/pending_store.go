@@ -2,10 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
@@ -80,4 +83,39 @@ func (s *PendingStore) Stats(ctx context.Context) (application.PendingStats, err
 		return application.PendingStats{}, markTransient(fmt.Errorf("count pending operations: %w", err))
 	}
 	return application.PendingStats{Waiting: count, Oldest: time.Duration(oldest * float64(time.Second))}, nil
+}
+
+func (s *PendingStore) RecordError(ctx context.Context, id uuid.UUID, reason string, base, ceiling time.Duration) (int, error) {
+	reason = strings.ToValidUTF8(reason, "?")
+	if len(reason) > maxReasonLength {
+		reason = reason[:maxReasonLength]
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		UPDATE wager_transactions
+		SET error_count = error_count + 1, last_error = $2,
+		    locked_until = now() + make_interval(secs => least($3 * power(2, least(error_count, 30)), $4))
+		WHERE id = $1 AND status IN ('PENDING', 'PENDING_REFERENCE')
+		RETURNING error_count`, id, reason, base.Seconds(), ceiling.Seconds()).Scan(&count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil // decided meanwhile: nothing to count
+	}
+	if err != nil {
+		return 0, markTransient(fmt.Errorf("record the error of pending operation %s: %w", id, err))
+	}
+	return count, nil
+}
+
+func (s *PendingStore) Fail(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE wager_transactions
+		SET status = 'FAILED', failure_code = 'INTERNAL_PERMANENT_FAILURE', updated_at = now(), processed_at = now(), locked_until = NULL
+		WHERE id = $1 AND status IN ('PENDING', 'PENDING_REFERENCE')`, id)
+	if err != nil {
+		return false, markTransient(fmt.Errorf("fail pending operation %s: %w", id, err))
+	}
+	return tag.RowsAffected() == 1, nil
 }

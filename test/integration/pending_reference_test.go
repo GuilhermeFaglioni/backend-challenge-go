@@ -25,7 +25,7 @@ import (
 // attempts or twelve seconds, gaps of one second doubling to two.
 func fastPending(c *config.Config) {
 	c.PendingReference = config.PendingReference{
-		MaxAttempts: 6, TTL: 12 * time.Second, BackoffBase: time.Second, BackoffMax: 2 * time.Second,
+		MaxAttempts: 6, TTL: 12 * time.Second, BackoffBase: time.Second, BackoffMax: 2 * time.Second, MaxErrors: 3,
 		PollInterval: 50 * time.Millisecond, BatchSize: 10, Lease: 3 * time.Second,
 	}
 }
@@ -614,4 +614,104 @@ func TestAnUndecidedOperationIsReadWithItsScheduleAndADecidedOneIsNot(t *testing
 		return wager.Transaction{}, application.PendingSchedule{}, f
 	}()
 	require.False(t, found, "and one that does not exist is not found either")
+}
+
+// --- an operation that cannot be tried at all ----------------------------------------------
+
+// A waiting operation whose row the application cannot read (its hash is not the hash of
+// what it holds, which the application never writes) can never be tried. It is counted, held
+// back longer each time, and after the limit it ends as FAILED, for audit, instead of being
+// tried forever. A healthy operation next to it is not affected.
+func TestAnOperationThatKeepsFailingEndsAsFailedForAudit(t *testing.T) {
+	a := startWalletAPIWith(t, fastPending)
+	w := a.openFunded(t, "100.00")
+	owner := connect(t.Context(), t, a.ownerDSN)
+	_, err := owner.Exec(t.Context(), `INSERT INTO wager_transactions
+		(id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash, requested_wallet_id, wallet_id, player_id,
+		 round_id, game_id, amount_minor, currency, reference_external_transaction_id, status, attempts, next_attempt_at, expires_at, created_at, updated_at)
+		VALUES (gen_random_uuid(), 'EXTERNAL', 'REFUND', 'provider-a', 'broken-1', 'provider-a:broken-1', 'not-the-hash', $1, $1, $2,
+		        'round-1', 'game-1', 100, 'BRL', 'bet-x', 'PENDING_REFERENCE', 1, now(), now() + interval '1 hour', now(), now())`, w.id, w.player)
+	require.NoError(t, err)
+	a.requireWaiting(t, w, "refund-ok", "REFUND", "30.00", "bet-1")
+
+	s := a.waitForStatus(t, "broken-1", "FAILED")
+
+	require.Equal(t, "INTERNAL_PERMANENT_FAILURE", s.FailureCode)
+	var errorCount int
+	var lastError string
+	require.NoError(t, a.pool.QueryRow(t.Context(), `SELECT error_count, last_error FROM wager_transactions WHERE external_transaction_id = 'broken-1'`).Scan(&errorCount, &lastError))
+	require.Equal(t, 3, errorCount, "failed at the configured limit, not before")
+	require.Contains(t, lastError, "is not a valid transaction", "the reason is kept for whoever audits it")
+	require.Eventually(t, func() bool { return a.metricValue(t, `pending_reference_resolutions_total{outcome="failed"}`) == 1 }, 10*time.Second, 100*time.Millisecond)
+	require.EqualValues(t, 3, a.metricValue(t, `pending_reference_resolutions_total{outcome="error"}`))
+	require.Contains(t, a.logs.String(), "kept failing and was ended as FAILED")
+
+	// The healthy one still works.
+	a.mustProcess(t, w, "bet-1", "BET", "30.00", "")
+	a.waitForStatus(t, "refund-ok", "PROCESSED")
+	balance, _ := a.wallet(t, w)
+	require.Equal(t, int64(10000), balance)
+	a.requireConsistent(t, w)
+}
+
+func TestAnErrorIsCountedAndHoldsTheOperationBackLongerEachTime(t *testing.T) {
+	f := newPendingFixture(t)
+	id := f.waiting(t, "op", -time.Second)
+
+	var holds []float64
+	for range 4 {
+		n, err := f.store.RecordError(t.Context(), id, "a defect", 2*time.Second, 5*time.Second)
+		require.NoError(t, err)
+		var hold float64
+		require.NoError(t, f.s.owner.QueryRow(f.s.ctx, `SELECT extract(epoch FROM locked_until - now())::float8 FROM wager_transactions WHERE id = $1`, id).Scan(&hold))
+		holds = append(holds, hold)
+		require.Equal(t, len(holds), n)
+	}
+	for i, want := range []float64{2, 4, 5, 5} {
+		require.InDelta(t, want, holds[i], 0.5, "after error %d", i+1)
+	}
+	got, err := f.store.Reserve(t.Context(), 10, time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, got, "a held-back operation is not reserved")
+
+	var count int
+	var reason string
+	require.NoError(t, f.s.owner.QueryRow(f.s.ctx, `SELECT error_count, last_error FROM wager_transactions WHERE id = $1`, id).Scan(&count, &reason))
+	require.Equal(t, 4, count)
+	require.Equal(t, "a defect", reason)
+
+	long, err := f.store.RecordError(t.Context(), id, strings.Repeat("x", 2000)+"\xff", time.Second, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 5, long, "a long or broken reason is cut, not refused")
+}
+
+func TestFailingEndsOnlyAnUndecidedOperation(t *testing.T) {
+	f := newPendingFixture(t)
+	id := f.waiting(t, "op", -time.Second)
+
+	failed, err := f.store.Fail(t.Context(), id)
+	require.NoError(t, err)
+	require.True(t, failed)
+	var status, code string
+	var processed bool
+	require.NoError(t, f.s.owner.QueryRow(f.s.ctx, `SELECT status, failure_code, processed_at IS NOT NULL FROM wager_transactions WHERE id = $1`, id).Scan(&status, &code, &processed))
+	require.Equal(t, "FAILED", status)
+	require.Equal(t, "INTERNAL_PERMANENT_FAILURE", code)
+	require.True(t, processed)
+
+	again, err := f.store.Fail(t.Context(), id)
+	require.NoError(t, err)
+	require.False(t, again, "a terminal operation is not touched again")
+	n, err := f.store.RecordError(t.Context(), id, "late", time.Second, time.Second)
+	require.NoError(t, err)
+	require.Zero(t, n, "nor counted")
+}
+
+func TestTheErrorCountAndTheReasonAreChecked(t *testing.T) {
+	f := newPendingFixture(t)
+	id := f.waiting(t, "op", time.Hour)
+	require.Equal(t, checkViolation, f.s.exec(f.s.owner, `UPDATE wager_transactions SET error_count = -1 WHERE id = $1`, id))
+	require.Equal(t, checkViolation, f.s.exec(f.s.owner, `UPDATE wager_transactions SET last_error = '' WHERE id = $1`, id))
+	require.Equal(t, checkViolation, f.s.exec(f.s.owner, `UPDATE wager_transactions SET last_error = repeat('x', 501) WHERE id = $1`, id))
+	require.Empty(t, f.s.exec(f.s.owner, `UPDATE wager_transactions SET last_error = repeat('x', 500) WHERE id = $1`, id))
 }
