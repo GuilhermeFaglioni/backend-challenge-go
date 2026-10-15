@@ -223,13 +223,13 @@ Constraints:
 
 ### `inbox`
 
-`(consumer_name, message_id)` como chave primária, `payload_hash`, `received_at`, `completed_at`.
+`(consumer_name, message_id)` como chave primária, `payload_hash` (SHA-256 em hexadecimal minúsculo, verificado por `CHECK`), `received_at` e `completed_at` (nulo só dentro da transação que trata a mensagem: como a linha e o que a mensagem causou confirmam juntos, uma linha visível para outra transação significa "tratada"). O papel da aplicação só insere e completa: `REVOKE UPDATE, DELETE, TRUNCATE` e `GRANT UPDATE (completed_at)`, de modo que ela não reescreve o que uma mensagem era nem esquece uma mensagem (esquecer deixaria uma mensagem ser tratada duas vezes). A inbox não tem expiração: o crescimento é de uma linha por mensagem e a política de retenção fica como trabalho futuro.
 
 ### `outbox`
 
 `event_id UUID PK`, `aggregate_id` (a carteira), `event_type`, `version`, `payload JSONB` (snapshot imutável, sempre um objeto), `correlation_id`, `causation_id`, `occurred_at`, `published_at`, mais o estado de publicação: `seq` (identidade gerada, a ordem de escrita), `attempts`, `next_attempt_at`, `locked_until` e `last_error`. Índices parciais nos não publicados: por `occurred_at` (a defasagem), por `seq` (o que está pendente) e por `(aggregate_id, seq)` (o que vem antes na mesma carteira). O trigger `outbox_guard` recusa qualquer mudança no conteúdo do evento e qualquer mudança em um evento já publicado.
 
-### Estado atual do schema (migrations 000002 a 000005)
+### Estado atual do schema (migrations 000002 a 000008)
 
 | Migration | Conteúdo |
 | --- | --- |
@@ -239,6 +239,7 @@ Constraints:
 | `000005_outbox` | `outbox` com `payload` obrigatoriamente objeto JSON e o índice parcial dos eventos não publicados (`occurred_at WHERE published_at IS NULL`). |
 | `000006_outbox_publishing` | O estado de publicação (`seq`, `attempts`, `next_attempt_at`, `locked_until`, `last_error`), os índices parciais do publicador e o trigger `outbox_guard` (conteúdo imutável; evento publicado congelado). |
 | `000007_ledger_sequence` | `seq` em `wallet_ledger_entries` (identidade gerada pelo banco, única) e o índice `(wallet_id, seq)`: a chave de ordem da listagem do ledger. |
+| `000008_inbox` | `inbox` com a chave `(consumer_name, message_id)`, o formato do hash, o tamanho do id e `completed_at >= received_at`; privilégios de somente inserir e completar para `wagering_app`. |
 
 Os triggers de proteção levantam `check_violation` (`23514`), e o do ledger levanta `restrict_violation` (`23001`). Cada constraint e cada trigger tem um teste de integração que tenta violá-lo por SQL direto (`test/integration/schema_test.go`) e que foi visto falhar sem ele. O `.down.sql` do ledger declara que apaga todo o histórico financeiro.
 
@@ -547,7 +548,7 @@ Erros de formato (`400`) não são persistidos: a operação não chega a existi
 - O sufixo `.fifo` é exigido pelo desafio, mas a entrega ao consumidor continua **at-least-once**: a deduplicação do FIFO só descarta envios repetidos do produtor numa janela de 5 minutos. A garantia contra processamento duplicado é a inbox mais a idempotência financeira no PostgreSQL.
 - `MessageGroupId = walletId`: preserva ordem por carteira e permite paralelismo entre carteiras.
 - `MessageDeduplicationId = messageId` do envelope.
-- `VisibilityTimeout = 30s`, long polling de 20s. O consumidor estende a visibilidade (`ChangeMessageVisibility`) se o processamento se aproximar do limite.
+- `VisibilityTimeout = 30s`, long polling de 20s. Em vez de estender a visibilidade durante o processamento, o consumidor **limita o tempo de tratamento de cada mensagem** (`SQS_CONSUMER_PROCESSING_TIMEOUT`, 20s), que precisa ficar abaixo da visibilidade: uma mensagem nunca é entregue a outra instância enquanto esta ainda trabalha nela. Estourar o prazo é uma falha do momento (nova tentativa), e a transação desfeita não deixa nada para trás.
 
 **Tratamento de uma mensagem, em uma transação SQL:**
 
@@ -566,6 +567,17 @@ Erros de formato (`400`) não são persistidos: a operação não chega a existi
 | Tentativas esgotadas | o redrive envia à DLQ |
 
 Se o processo morre depois do commit e antes do `DeleteMessage`, a mensagem é reentregue e a inbox/idempotência devolvem o resultado sem nova movimentação.
+
+**No código (`internal/adapters/sqsconsumer`, `internal/application/processwager`):**
+
+- **A inbox mora no caso de uso.** A inbox precisa confirmar na mesma transação que o resto, e é `processwager` quem abre essa transação; por isso `Input.Message` (consumidor e `messageId`) faz o caso de uso gravar a mensagem **antes de tudo** (antes da leitura sem lock e antes do lock da carteira, o que faz duas cópias da mesma mensagem esperarem uma pela outra na chave primária e nunca se cruzarem com o lock) e completá-la com a última escrita. O INSERT é `ON CONFLICT DO NOTHING` seguido, se nada foi inserido, de um SELECT em uma instrução nova (só ela enxerga a linha que a outra transação acabou de confirmar). O consumidor tem o nome da fila de entrada.
+- **O hash da mensagem** é o SHA-256 do hash do pedido (os campos de negócio, §8) mais a chave de idempotência. O horário e os atributos do transporte não entram: reenviar a mesma mensagem não muda o que ela diz. Outro `messageId` para a mesma operação não é a mesma mensagem: a chave de idempotência o responde como replay (uma movimentação só) e a inbox registra as duas.
+- **Envelope estrito**, como o HTTP: campos desconhecidos, tipos errados, um segundo documento depois do primeiro e UUIDs que não estão na forma canônica são recusados, nunca corrigidos. O tipo precisa ser `WagerTransactionRequested`. O detalhe do erro diz o campo, nunca o valor, porque viaja para a DLQ e para o log.
+- **Destino de cada mensagem:** tratada (processada, recusada por regra e gravada, ou já vista) → `DeleteMessage` depois do commit. JSON malformado, tipo desconhecido, campo inválido (inclusive `OPENING`), `kind` ainda não processado, chave de idempotência ou `messageId` reutilizados com outro conteúdo → copiada para a DLQ (`MessageGroupId` do original, `MessageDeduplicationId` = id da mensagem no SQS, atributos `errorReason`, `errorDetail`, `receiveCount`, `messageId`, `correlationId`) e só então apagada, o que a tira do caminho do grupo. Se a cópia falha, a mensagem fica. Qualquer outro erro (banco indisponível, prazo estourado, erro inesperado) deixa a mensagem na fila com `ChangeMessageVisibility` = `base × 2^(recebimentos−1)` limitado ao máximo (2s, 4s, 8s... até 60s); depois de `maxReceiveCount` o redrive da fila a envia à DLQ.
+- **Ordem do grupo:** um lote pode ter várias mensagens do mesmo grupo. Quando uma delas fica na fila, as seguintes do mesmo grupo no lote são devolvidas sem tratar (`ChangeMessageVisibility(0)`) para não passarem na frente.
+- **`SIGTERM`:** o consumidor para de receber, termina a mensagem em andamento e devolve as demais do lote. Se o prazo do `fx.StopTimeout` acabar antes, o tratamento é cancelado e a mensagem em andamento é devolvida, não atrasada. O `DeleteMessage`, a visibilidade e o envio à DLQ usam um contexto próprio de 5s: uma mensagem já confirmada precisa ser apagada mesmo durante o encerramento.
+- **Ponto de falha `consumer_after_commit`:** entre o commit e o `DeleteMessage`. O teste mata o processo ali, confere que o commit existe e que a mensagem continua na fila, e que outra instância a recebe, a reconhece e não move dinheiro de novo.
+- **Métricas** (todas começam em zero): `sqs_messages_received_total`, `sqs_messages_handled_total{result}` (`handled`, `duplicate`, `retried`, `dead_lettered`, `released`), `sqs_dead_letters_total{reason}` e `wager_duplicates_total{type="message"|"message_conflict"}`. O log registra ids e o desfecho, nunca o corpo, a chave de idempotência nem valores.
 
 ### Saída: transactional outbox
 
@@ -688,6 +700,7 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
 - **Logs:** JSON via `slog`, com `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId` quando disponíveis. Não registra tokens, credenciais nem payloads financeiros completos (valores monetários só em eventos de auditoria específicos, sem corpo bruto).
 - **Métricas (Prometheus):** transações por status e tipo, duplicatas (replays), retries, mensagens enviadas à DLQ, conflitos de concorrência (retries por `40001`/`40P01`/versão), atraso da outbox (idade do evento pendente mais antigo), latência de processamento (histograma) e divergências de reconciliação.
   - Processamento de operações (`processwager`): `wager_requests_total{kind,outcome}` (todos os desfechos: `processed`, `rejected`, `replayed`, `key_conflict`, `duplicate_external`, `invalid`, `unsupported`, `unavailable`, `error`), `wager_duplicates_total{type}` (`replay`, `key_conflict`, `external_id`), `wager_processing_duration_seconds{kind}` (histograma, qualquer desfecho) e `db_transaction_retries_total{reason}` (`serialization_failure`, `deadlock`, `concurrent_update`: cada um é um conflito de concorrência absorvido por uma retentativa). O tipo vem de fora, então um valor desconhecido vira o rótulo `unknown`, nunca um novo rótulo. Todas as séries começam em zero.
+  - Consumidor SQS: `sqs_messages_received_total` (cada recebimento, inclusive o de uma mensagem entregue de novo), `sqs_messages_handled_total{result}` (`handled`, `duplicate`, `retried`, `dead_lettered`, `released`) e `sqs_dead_letters_total{reason}` (`malformed`, `unknown_type`, `invalid`, `unsupported_kind`, `key_conflict`, `duplicate_external`, `message_conflict`). As duplicatas por mensagem entram em `wager_duplicates_total{type="message"}` e `{type="message_conflict"}`.
 - **Health:** `GET /health/live` (processo) e `GET /health/ready` (Postgres e SQS).
 - **Opcionais:** tracing com OpenTelemetry fica como diferencial, se houver tempo.
 

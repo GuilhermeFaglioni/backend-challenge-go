@@ -76,6 +76,8 @@ curl -s localhost:8081/providers/provider-a/wagering/transactions/transaction-12
 
 Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. Por enquanto só o tipo `BET` é processado.
 
+A mesma operação também entra pela fila `wager-transactions.fifo` (corpo no formato da seção 10 do enunciado, `MessageGroupId` = id da carteira). O resultado é o mesmo do HTTP, inclusive a idempotência: a mensagem é apagada da fila só depois do commit, o que não pode ser tratado (JSON inválido, tipo desconhecido, campo inválido, chave ou `messageId` reutilizados com outro conteúdo) vai para `wager-transactions-dlq.fifo` com o motivo em `errorReason`, e uma falha do momento deixa a mensagem na fila para outra tentativa, com espera crescente.
+
 O ledger de uma carteira (somente o serviço interno), da entrada mais antiga para a mais nova, com a abertura incluída; use o `nextCursor` de uma página como `cursor` da seguinte:
 
 ```bash
@@ -157,6 +159,10 @@ Todas estão em [.env.example](.env.example). A aplicação valida a configuraç
 | `OIDC_DISCOVERY_URL` | não | Onde buscar metadados e JWKS; padrão é o issuer |
 | `OIDC_AUDIENCE` | não | `aud` esperado (padrão `wallet-api`) |
 | `SQS_INPUT_QUEUE`, `SQS_EVENTS_QUEUE` | não | Filas FIFO de entrada e de eventos |
+| `SQS_DEAD_LETTER_QUEUE` | não | Fila FIFO para onde o consumidor envia o que nunca poderá ser tratado (`wager-transactions-dlq.fifo`) |
+| `SQS_CONSUMER_WORKERS`, `SQS_CONSUMER_BATCH_SIZE`, `SQS_CONSUMER_POLL_WAIT` | não | Consumidor: laços de recebimento por instância (`4`), mensagens por recebimento (`10`, máximo do SQS) e espera do long polling (`20s`, máximo do SQS) |
+| `SQS_CONSUMER_PROCESSING_TIMEOUT` | não | Prazo para tratar uma mensagem (`20s`); precisa ficar abaixo do visibility timeout da fila (30s) |
+| `SQS_CONSUMER_RETRY_BACKOFF_BASE`, `SQS_CONSUMER_RETRY_BACKOFF_MAX` | não | Espera, em segundos inteiros, de uma mensagem que falhou por um motivo do momento: a base (`2s`) dobra a cada recebimento até o máximo (`60s`) |
 | `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE` | não | Publicador da outbox: espera quando não há nada a enviar (`500ms`), eventos por lote (`10`, máximo do SQS) e por quanto tempo um evento reservado fica reservado (`30s`) |
 | `CORS_ALLOWED_ORIGINS` | não | Origens de navegador autorizadas a chamar a API (separadas por vírgula, no formato `scheme://host[:porta]`). Vazio, o padrão, não autoriza nenhuma; o Compose autoriza o Swagger UI |
 | `HTTP_ADDR`, `LOG_LEVEL`, `SHUTDOWN_TIMEOUT`, `DATABASE_MAX_CONNS`, `INSTANCE_ID` | não | Ajustes operacionais |

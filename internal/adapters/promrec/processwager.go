@@ -33,7 +33,7 @@ var (
 // NewWager registers the metrics on reg, every series at zero:
 //
 //	wager_requests_total{kind,outcome}      every request, by how it ended
-//	wager_duplicates_total{type}            replays, key conflicts and duplicate external ids
+//	wager_duplicates_total{type}            replays, key conflicts, duplicate external ids and messages delivered again
 //	wager_processing_duration_seconds{kind} how long a request took, whatever the outcome
 //	db_transaction_retries_total{reason}    concurrency conflicts that a retry absorbed
 func NewWager(reg prometheus.Registerer) *Wager {
@@ -59,7 +59,7 @@ func NewWager(reg prometheus.Registerer) *Wager {
 		}
 		w.duration.WithLabelValues(kind)
 	}
-	for _, t := range []string{duplicateReplay, duplicateKeyConflict, duplicateExternal} {
+	for _, t := range []string{duplicateReplay, duplicateKeyConflict, duplicateExternal, duplicateMessage, duplicateMessageConflict} {
 		w.duplicates.WithLabelValues(t)
 	}
 	for _, reason := range application.RetryReasons {
@@ -70,9 +70,11 @@ func NewWager(reg prometheus.Registerer) *Wager {
 }
 
 const (
-	duplicateReplay      = "replay"
-	duplicateKeyConflict = "key_conflict"
-	duplicateExternal    = "external_id"
+	duplicateReplay          = "replay"
+	duplicateKeyConflict     = "key_conflict"
+	duplicateExternal        = "external_id"
+	duplicateMessage         = "message"
+	duplicateMessageConflict = "message_conflict"
 )
 
 func kindNames() []string {
@@ -104,6 +106,10 @@ func (w *Wager) Handled(kind wager.Kind, outcome processwager.Outcome, took time
 		w.duplicates.WithLabelValues(duplicateKeyConflict).Inc()
 	case processwager.OutcomeDuplicateExternal:
 		w.duplicates.WithLabelValues(duplicateExternal).Inc()
+	case processwager.OutcomeDuplicateMessage:
+		w.duplicates.WithLabelValues(duplicateMessage).Inc()
+	case processwager.OutcomeMessageConflict:
+		w.duplicates.WithLabelValues(duplicateMessageConflict).Inc()
 	}
 }
 

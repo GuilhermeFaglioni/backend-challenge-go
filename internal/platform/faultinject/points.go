@@ -31,11 +31,15 @@ const (
 	// a batch and before it marked the events as published: they are sent but still
 	// look unpublished, and another instance must publish them again.
 	OutboxAfterPublish Point = "outbox_after_publish"
+	// ConsumerAfterCommit is reached by the queue consumer after a message was handled
+	// and committed, and before it deleted the message: the work is done but the queue
+	// still holds the message, so it is delivered again and must change nothing.
+	ConsumerAfterCommit Point = "consumer_after_commit"
 )
 
 // Points lists every point. Adding a constant above without adding it here is
 // caught by a test, so a point cannot exist in the code and be unknown to the
 // `faultinject` build.
 func Points() []Point {
-	return []Point{HTTPBeforeListen, HTTPAfterListen, OutboxAfterReserve, OutboxAfterPublish}
+	return []Point{HTTPBeforeListen, HTTPAfterListen, OutboxAfterReserve, OutboxAfterPublish, ConsumerAfterCommit}
 }

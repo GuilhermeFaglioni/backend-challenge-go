@@ -67,6 +67,7 @@ func (r *recorder) Wallets() application.WalletRepository           { return (*w
 func (r *recorder) Transactions() application.TransactionRepository { return (*txRepo)(r) }
 func (r *recorder) Ledger() application.LedgerRepository            { return (*ledgerRepo)(r) }
 func (r *recorder) Outbox() application.OutboxRepository            { return (*outboxRepo)(r) }
+func (r *recorder) Inbox() application.InboxRepository              { panic("not used") }
 
 type (
 	walletRepo recorder

@@ -319,6 +319,36 @@ status=$(api_status POST "$second_port" "/wallets/${wallet_id}/reconciliation" "
 [ "$status" = "403" ] || fail "a provider reconciling a wallet answered ${status}, not 403"
 ok "the reconciliation finds the books in agreement, and is the internal role's alone"
 
+# The same use case through the queue: a bet sent as a message is applied, the message
+# leaves the queue, and one that can never be handled ends in the dead-letter queue.
+input_url=$(queue_url wager-transactions.fifo)
+dlq_url=$(queue_url wager-transactions-dlq.fifo)
+message_body="{\"messageId\":\"smoke-msg-1\",\"type\":\"WagerTransactionRequested\",\"occurredAt\":\"2026-09-08T12:00:00.000Z\",\"data\":{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-bet-2\",\"idempotencyKey\":\"smoke-key-2\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"BET\",\"money\":{\"amount\":\"5.00\",\"currency\":\"BRL\"}}}"
+awslocal_sqs send-message --queue-url "$input_url" --message-group-id "$wallet_id" --message-deduplication-id smoke-dedup-1 \
+  --message-body "$message_body" >/dev/null || fail "could not send the bet message"
+wallet_after_message() {
+  local status
+  status=$(api_status GET "$third_port" "/wallets/${wallet_id}" "$internal_token") && [ "$status" = "200" ] \
+    && [ "$(json_get balance.amount < "$SMOKE_BODY")" = "70.00" ]
+}
+wait_for "the bet message to be applied (balance 70.00)" wallet_after_message
+queue_is_empty() {
+  [ "$(awslocal_sqs get-queue-attributes --queue-url "$input_url" --attribute-names All \
+    --query 'Attributes.[ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible]' --output text | tr -d '[:space:]')" = "00" ]
+}
+wait_for "the handled message to leave the input queue" queue_is_empty
+ok "a bet sent through the queue is applied (70.00) and its message is deleted"
+
+awslocal_sqs send-message --queue-url "$input_url" --message-group-id "$wallet_id" --message-deduplication-id smoke-dedup-2 \
+  --message-body '{"messageId":"smoke-msg-bad","type":"Unknown"}' >/dev/null || fail "could not send the bad message"
+dead_letter_arrived() {
+  [ "$(awslocal_sqs get-queue-attributes --queue-url "$dlq_url" --attribute-names ApproximateNumberOfMessages \
+    --query Attributes.ApproximateNumberOfMessages --output text)" -ge 1 ]
+}
+wait_for "the unknown message in the dead-letter queue" dead_letter_arrived
+wait_for "the bad message to leave the input queue" queue_is_empty
+ok "a message that can never be handled goes to the dead-letter queue and stops blocking its group"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"

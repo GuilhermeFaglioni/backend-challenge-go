@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/api"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/test/infra"
 )
 
@@ -31,12 +32,19 @@ type walletAPI struct {
 	providerB string
 }
 
-func startWalletAPI(t *testing.T) walletAPI {
+func startWalletAPI(t *testing.T) walletAPI { return startWalletAPIWith(t, nil) }
+
+// startWalletAPIWith starts the application after letting the test change its
+// configuration (for instance to point it at queues of its own).
+func startWalletAPIWith(t *testing.T, configure func(*config.Config)) walletAPI {
 	t.Helper()
 	ctx := t.Context()
 	db := pg.NewDatabase(ctx, t)
 	require.NoError(t, infra.Migrate(db.OwnerDSN))
 	cfg := appConfig(t, db, ls.Endpoint)
+	if configure != nil {
+		configure(&cfg)
+	}
 	running := startApp(t, cfg)
 
 	internalToken, err := kc.Token(ctx, "internal-service", "internal-service-local-secret")

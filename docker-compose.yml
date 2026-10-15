@@ -28,6 +28,7 @@ x-app: &app
     AWS_SECRET_ACCESS_KEY: test
     SQS_INPUT_QUEUE: wager-transactions.fifo
     SQS_EVENTS_QUEUE: wager-events.fifo
+    SQS_DEAD_LETTER_QUEUE: wager-transactions-dlq.fifo
     # Tokens carry the host-facing issuer; the metadata and keys are fetched
     # from inside the Docker network.
     OIDC_ISSUER_URL: http://localhost:${KEYCLOAK_PORT:-8180}/realms/wagering
