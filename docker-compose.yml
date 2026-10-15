@@ -33,6 +33,8 @@ x-app: &app
     OIDC_ISSUER_URL: http://localhost:${KEYCLOAK_PORT:-8180}/realms/wagering
     OIDC_DISCOVERY_URL: http://keycloak:8080/realms/wagering
     OIDC_AUDIENCE: wallet-api
+    # The Swagger UI below runs in the browser on another origin.
+    CORS_ALLOWED_ORIGINS: http://localhost:8089
 
 services:
   postgres:
@@ -132,6 +134,19 @@ services:
       INSTANCE_ID: app-3
     ports:
       - "8083:8080"
+
+  # Interactive documentation: loads the contract from app-1 and, through "Authorize",
+  # gets a token from Keycloak with the client_credentials grant and calls the API.
+  # The port is fixed because the browser origin is allowed in the application's CORS
+  # configuration and in the Keycloak clients (webOrigins).
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    environment:
+      URL: http://localhost:8081/openapi.yaml
+      PERSIST_AUTHORIZATION: "true"
+      DISPLAY_REQUEST_DURATION: "true"
+    ports:
+      - "8089:8080"
 
 volumes:
   postgres-data:

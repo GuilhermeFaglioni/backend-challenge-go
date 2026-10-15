@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/api"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
@@ -59,6 +60,7 @@ type Routes struct {
 	log        *slog.Logger
 	failures   *prometheus.CounterVec
 	registered []Route
+	cors       corsPolicy
 }
 
 // allReasons is every reason an authentication outcome is counted under, so that
@@ -112,8 +114,18 @@ func (r *Routes) Protected(pattern string, h http.Handler, roles ...auth.Role) {
 	r.registered = append(r.registered, Route{Pattern: pattern, Roles: slices.Clone(roles)})
 }
 
+// AllowOrigins lets browsers on the given origins call the API (see corsPolicy).
+// Call it before Handler.
+func (r *Routes) AllowOrigins(origins []string) { r.cors = corsPolicy{origins: slices.Clone(origins)} }
+
 // Handler is the router to serve.
-func (r *Routes) Handler() http.Handler { return http.HandlerFunc(r.mux.ServeHTTP) }
+func (r *Routes) Handler() http.Handler {
+	h := http.HandlerFunc(r.mux.ServeHTTP)
+	if len(r.cors.origins) == 0 {
+		return h
+	}
+	return r.cors.wrap(h)
+}
 
 // Registered lists every route, in registration order.
 func (r *Routes) Registered() []Route { return slices.Clone(r.registered) }
@@ -198,7 +210,7 @@ func bearerToken(header http.Header) (token string, reason auth.Reason) {
 
 // registerRoutes declares every route of the application. A business endpoint is
 // added here with Protected and the roles that may call it.
-func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry) {
+func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wallets *Wallets) {
 	r.Public("GET /health/live", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}))
@@ -211,4 +223,10 @@ func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry) {
 		writeJSON(w, status, report)
 	}))
 	r.Public("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	r.Public("GET /openapi.yaml", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = w.Write(api.OpenAPI)
+	}))
+
+	wallets.register(r)
 }

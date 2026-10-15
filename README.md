@@ -28,6 +28,7 @@ docker compose up --build
 | PostgreSQL | `localhost:5432` (banco `wagering`) |
 | LocalStack (SQS) | `http://localhost:4566` |
 | Keycloak | `http://localhost:8180` (admin: `admin` / `admin`) |
+| Swagger UI (documentação interativa) | `http://localhost:8089` |
 
 Se alguma porta do host já estiver ocupada (por exemplo, outro Postgres na 5432), mude-a sem editar arquivos: `POSTGRES_PORT=55432 docker compose up --build` (também existem `LOCALSTACK_PORT` e `KEYCLOAK_PORT`).
 
@@ -37,7 +38,27 @@ Verificação automática do ambiente (migrations, instâncias, token e filas), 
 bash .github/scripts/smoke.sh
 ```
 
-Endpoints disponíveis no scaffold:
+### API
+
+O contrato da API é [api/openapi.yaml](api/openapi.yaml), escrito à mão, embutido no binário e servido em `GET /openapi.yaml`. A API usa JSON, valores monetários em string com duas casas (`"100.00"`) e erros no formato `{"error":{"code":...,"message":...}}`. Os endpoints de carteira exigem o papel `internal`.
+
+Interativo: abra `http://localhost:8089`, clique em **Authorize**, informe `internal-service` e o secret `internal-service-local-secret` (fluxo `client_credentials`) e use **Try it out**.
+
+Pela linha de comando:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=internal-service -d client_secret=internal-service-local-secret | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+```bash
+curl -s -X POST localhost:8081/wallets -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"playerId":"7c9e6679-7425-40de-944b-e07fc1f90ae7","initialBalance":{"amount":"100.00","currency":"BRL"}}'
+```
+
+```bash
+curl -s localhost:8082/wallets/<id-devolvido-acima> -H "Authorization: Bearer $TOKEN"
+```
+
+Outros endpoints:
 
 ```bash
 curl -s localhost:8081/health/live
@@ -106,6 +127,7 @@ Todas estão em [.env.example](.env.example). A aplicação valida a configuraç
 | `OIDC_DISCOVERY_URL` | não | Onde buscar metadados e JWKS; padrão é o issuer |
 | `OIDC_AUDIENCE` | não | `aud` esperado (padrão `wallet-api`) |
 | `SQS_INPUT_QUEUE`, `SQS_EVENTS_QUEUE` | não | Filas FIFO de entrada e de eventos |
+| `CORS_ALLOWED_ORIGINS` | não | Origens de navegador autorizadas a chamar a API (separadas por vírgula, no formato `scheme://host[:porta]`). Vazio, o padrão, não autoriza nenhuma; o Compose autoriza o Swagger UI |
 | `HTTP_ADDR`, `LOG_LEVEL`, `SHUTDOWN_TIMEOUT`, `DATABASE_MAX_CONNS`, `INSTANCE_ID` | não | Ajustes operacionais |
 
 ## Filas
@@ -179,7 +201,7 @@ Obter um token (os secrets são apenas locais):
 curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-local-secret
 ```
 
-A API valida esses tokens localmente (assinatura RS256, emissor, audiência `wallet-api`, expiração) e só sobe depois de descobrir o Keycloak; o desenho está no `ARCHITECTURE.md`, seção 13. Toda rota de negócio é registrada com os papéis que podem chamá-la (`provider` ou `internal`), e um teste reprova rotas sem autorização. Os endpoints de negócio chegam com os próximos tickets do [roadmap](docs/ROADMAP.md).
+A API valida esses tokens localmente (assinatura RS256, emissor, audiência `wallet-api`, expiração) e só sobe depois de descobrir o Keycloak; o desenho está no `ARCHITECTURE.md`, seção 13. Toda rota de negócio é registrada com os papéis que podem chamá-la (`provider` ou `internal`), e um teste reprova rotas sem autorização. Os demais endpoints de negócio chegam com os próximos tickets do [roadmap](docs/ROADMAP.md).
 
 ## Testes
 

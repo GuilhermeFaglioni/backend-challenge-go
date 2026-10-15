@@ -460,6 +460,7 @@ Uma reversão que exigiria debitar mais que o saldo (por exemplo, `ROLLBACK` de 
 | Carteira já existe para jogador e moeda | `409` | `error.code: WALLET_ALREADY_EXISTS` |
 | Rejeição de negócio (inclusive em replay) | `422` | `status: REJECTED`, `failureCode`, `transactionId` |
 | Indisponibilidade transitória (Postgres, SQS) | `503` | `error.code: UNAVAILABLE` e `Retry-After` |
+| Erro inesperado | `500` | `error.code: INTERNAL_ERROR`; o detalhe vai só para o log, com o `correlationId` |
 
 Detalhes:
 
@@ -490,7 +491,7 @@ Erros de formato (`400`) não são persistidos: a operação não chega a existi
 
 ### Documentação da API (OpenAPI)
 
-**Especificação escrita antes dos handlers.** O contrato fica em `api/openapi.yaml`, em OpenAPI 3.1, escrito à mão. Ele é a fonte da verdade do contrato HTTP e cobre:
+**Especificação escrita antes dos handlers.** O contrato fica em `api/openapi.yaml`, em OpenAPI 3.0.3, escrito à mão. A versão é a 3.0.3, e não a 3.1, porque é a que o `kin-openapi` valida por completo; nada do que o contrato precisa (`oneOf`, `enum`, `pattern`, esquema de segurança OAuth 2.0) exige a 3.1. Ele é a fonte da verdade do contrato HTTP e cobre:
 
 - todos os endpoints, com exemplos derivados do enunciado;
 - os códigos e corpos de resposta desta seção, com `oneOf` onde a resposta varia (processada, pendente, rejeitada);
@@ -500,6 +501,12 @@ Erros de formato (`400`) não são persistidos: a operação não chega a existi
 - o esquema de segurança OAuth 2.0 `clientCredentials`, apontando para o token endpoint do Keycloak, e os papéis exigidos por endpoint.
 
 **Validação por teste de contrato.** Os testes de integração da API usam `kin-openapi` para validar cada requisição e resposta reais contra o `openapi.yaml`. Um handler que devolva status, campo ou formato fora do contrato faz o teste falhar, o que impede a documentação de divergir do comportamento.
+
+**Estado atual.** O contrato cobre `POST /wallets`, `GET /wallets/{walletId}` e as rotas operacionais. Um teste reprova o build se uma rota registrada não estiver no documento ou se uma rota do documento não for servida, e outro valida o próprio documento (OpenAPI válido, `security` declarado em toda operação, padrão de `Money` igual ao do domínio). Os testes de integração sobem a aplicação com PostgreSQL e Keycloak reais e passam toda requisição e resposta por um validador do `kin-openapi`; há também um teste que prova que o validador reprova um handler que desvia (status, campo ausente, dinheiro como número, código de erro fora da lista). O smoke do Compose abre uma carteira com um token real em uma instância, lê em outra e confirma o `409` numa terceira.
+
+**CORS e Swagger UI.** O Swagger UI roda no navegador em outra origem (`http://localhost:8089`), então a API precisa de CORS e o Keycloak precisa de `webOrigins` nos clients. `CORS_ALLOWED_ORIGINS` lista as origens exatas autorizadas (padrão: nenhuma; `*`, caminho e barra final são recusados no boot). Para uma origem autorizada a API devolve `Access-Control-Allow-Origin` com a própria origem, expõe `X-Correlation-Id`, `Location`, `Retry-After` e `WWW-Authenticate`, e responde o preflight (`OPTIONS` com `Access-Control-Request-Method`) sem exigir credencial: ele não chega a nenhuma rota e não revela dados. `Vary: Origin` vai em toda resposta quando o CORS está ligado. Não há cookies, então não há `Access-Control-Allow-Credentials`.
+
+**Correlação.** `X-Correlation-Id` é aceito se for um único header de 1 a 128 caracteres ASCII imprimíveis; senão é gerado um UUIDv7. O valor usado volta no header da resposta, é passado ao caso de uso (e gravado na transação e nos eventos) e aparece no log com o id da carteira.
 
 **Publicação.** O binário embute o arquivo (`embed`) e o serve em `GET /openapi.yaml`, rota pública como os health checks. O Docker Compose sobe um serviço Swagger UI (imagem oficial) que carrega esse arquivo; pelo botão "Authorize" é possível obter um token no Keycloak via `client_credentials` e chamar os endpoints autenticados.
 

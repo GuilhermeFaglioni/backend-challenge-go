@@ -37,6 +37,11 @@ func TestValidate(t *testing.T) {
 		{name: "relative issuer", mutate: func(c *Config) { c.OIDC.IssuerURL = "/realms/wagering" }, wantErr: "OIDC_ISSUER_URL"},
 		{name: "bad aws endpoint", mutate: func(c *Config) { c.AWS.EndpointURL = "localhost:4566" }, wantErr: "AWS_ENDPOINT_URL"},
 		{name: "empty audience", mutate: func(c *Config) { c.OIDC.Audience = "" }, wantErr: "OIDC_AUDIENCE"},
+		{name: "cors origin ok", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089", "https://docs.example.com"} }},
+		{name: "cors wildcard", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"*"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
+		{name: "cors with a path", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089/ui"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
+		{name: "cors with a trailing slash", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089/"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
+		{name: "cors without a scheme", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"localhost:8089"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,5 +82,32 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for missing DATABASE_URL")
+	}
+}
+
+func TestLoadParsesTheCORSOrigins(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "http://localhost:8089,https://docs.example.com")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CORSAllowedOrigins) != 2 || cfg.CORSAllowedOrigins[0] != "http://localhost:8089" || cfg.CORSAllowedOrigins[1] != "https://docs.example.com" {
+		t.Fatalf("got %v", cfg.CORSAllowedOrigins)
+	}
+}
+
+func TestNoCORSOriginsByDefault(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CORSAllowedOrigins) != 0 {
+		t.Fatalf("got %v", cfg.CORSAllowedOrigins)
 	}
 }
