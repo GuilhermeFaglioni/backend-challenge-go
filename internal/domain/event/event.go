@@ -107,20 +107,52 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	if e.data == nil {
 		return nil, ErrUninitialized
 	}
-	type envelope struct {
-		EventID       uuid.UUID `json:"eventId"`
-		EventType     string    `json:"eventType"`
-		AggregateID   uuid.UUID `json:"aggregateId"`
-		CorrelationID string    `json:"correlationId"`
-		CausationID   string    `json:"causationId,omitempty"`
-		OccurredAt    string    `json:"occurredAt"`
-		Version       int       `json:"version"`
-		Data          Data      `json:"data"`
+	data, err := e.DataJSON()
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(envelope{
+	return Envelope{
 		EventID: e.eventID, EventType: e.Type(), AggregateID: e.AggregateID(),
 		CorrelationID: e.correlationID, CausationID: e.causationID,
-		OccurredAt: e.occurredAt.Format(timeLayout), Version: e.Version(), Data: e.data,
+		OccurredAt: e.occurredAt, Version: e.Version(), Data: data,
+	}.MarshalJSON()
+}
+
+// Envelope is the stored and published form of an event: the envelope fields and the
+// data exactly as it was serialized when the event was written. The publisher builds
+// it from an outbox row, so what it sends is byte for byte what Event.MarshalJSON
+// produces, and what was stored is what was sent.
+type Envelope struct {
+	EventID       uuid.UUID
+	EventType     string
+	AggregateID   uuid.UUID
+	CorrelationID string
+	CausationID   string // optional
+	OccurredAt    time.Time
+	Version       int
+	Data          json.RawMessage
+}
+
+// MarshalJSON writes the envelope with its fields in a fixed order. It is the one
+// place the wire format is defined.
+func (e Envelope) MarshalJSON() ([]byte, error) {
+	if len(e.Data) == 0 {
+		return nil, ErrUninitialized
+	}
+	type wire struct {
+		EventID       uuid.UUID       `json:"eventId"`
+		EventType     string          `json:"eventType"`
+		AggregateID   uuid.UUID       `json:"aggregateId"`
+		CorrelationID string          `json:"correlationId"`
+		CausationID   string          `json:"causationId,omitempty"`
+		OccurredAt    string          `json:"occurredAt"`
+		Version       int             `json:"version"`
+		Data          json.RawMessage `json:"data"`
+	}
+	return json.Marshal(wire{
+		EventID: e.EventID, EventType: e.EventType, AggregateID: e.AggregateID,
+		CorrelationID: e.CorrelationID, CausationID: e.CausationID,
+		OccurredAt: e.OccurredAt.UTC().Format(timeLayout), Version: e.Version, Data: e.Data,
 	})
 }
 

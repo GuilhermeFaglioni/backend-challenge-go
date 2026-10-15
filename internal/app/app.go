@@ -13,8 +13,10 @@ import (
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/httpapi"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/outbox"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/postgres"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsclient"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqspublisher"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/logger"
@@ -40,6 +42,8 @@ func New(cfg config.Config) fx.Option {
 		sqsclient.Module,
 		auth.Module,
 		usecases,
+		sqspublisher.Module,
+		outbox.Module,
 		httpapi.Module,
 	)
 }

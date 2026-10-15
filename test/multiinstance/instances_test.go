@@ -272,11 +272,22 @@ func TestKilledInstanceDoesNotAffectTheOthersAndComesBack(t *testing.T) {
 	}
 }
 
+// startupPoints are reached while the process boots; every other point is reached
+// by the work of a running instance and has its own recovery test.
+var startupPoints = map[faultinject.Point]bool{
+	faultinject.HTTPBeforeListen: true,
+	faultinject.HTTPAfterListen:  true,
+}
+
 // One subtest per point: each fails if that point's Hit call is removed from the
 // code, so every point is proven to be wired, not just one of them.
 func TestFaultPointCrashesTheProcessAtThatPoint(t *testing.T) {
 	for _, point := range faultinject.Points() {
 		t.Run(string(point), func(t *testing.T) {
+			if !startupPoints[point] {
+				crashesWhenItsWorkArrives(t, point)
+				return
+			}
 			healthy, db := startCluster(t, 1)
 			crashing := startInstance(t, "crashing", freeAddrs(t, 1)[0], db, map[string]string{faultinject.EnvVar: string(point)})
 
@@ -328,6 +339,13 @@ func TestSIGTERMStopsGracefullyAndWritesUsableCoverage(t *testing.T) {
 	require.NotEqual(t, -1, httpStopped, "missing 'http server stopped' in %v", msgs)
 	require.NotEqual(t, -1, poolClosed, "missing 'postgres pool closed' in %v", msgs)
 	require.Less(t, httpStopped, poolClosed)
+	// The outbox publisher stops after the server (nothing writes new events) and
+	// before the pool and the SQS client it uses are closed.
+	publisherStopped := slices.Index(msgs, "outbox publisher stopped")
+	require.NotEqual(t, -1, publisherStopped, "missing 'outbox publisher stopped' in %v", msgs)
+	require.Less(t, httpStopped, publisherStopped)
+	require.Less(t, publisherStopped, poolClosed)
+	require.Less(t, publisherStopped, slices.Index(msgs, "sqs client closed"))
 
 	// The coverage this process wrote must exist under its own pid (other tests
 	// share the directory) and be readable by the tool the combined report uses.

@@ -20,6 +20,7 @@ func validConfig() Config {
 			DiscoveryURL: "http://keycloak:8080/realms/wagering",
 			Audience:     "wallet-api",
 		},
+		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second},
 	}
 }
 
@@ -37,6 +38,11 @@ func TestValidate(t *testing.T) {
 		{name: "relative issuer", mutate: func(c *Config) { c.OIDC.IssuerURL = "/realms/wagering" }, wantErr: "OIDC_ISSUER_URL"},
 		{name: "bad aws endpoint", mutate: func(c *Config) { c.AWS.EndpointURL = "localhost:4566" }, wantErr: "AWS_ENDPOINT_URL"},
 		{name: "empty audience", mutate: func(c *Config) { c.OIDC.Audience = "" }, wantErr: "OIDC_AUDIENCE"},
+		{name: "zero outbox poll interval", mutate: func(c *Config) { c.Outbox.PollInterval = 0 }, wantErr: "OUTBOX_POLL_INTERVAL"},
+		{name: "zero outbox batch", mutate: func(c *Config) { c.Outbox.BatchSize = 0 }, wantErr: "OUTBOX_BATCH_SIZE"},
+		{name: "outbox batch beyond SQS", mutate: func(c *Config) { c.Outbox.BatchSize = 11 }, wantErr: "OUTBOX_BATCH_SIZE"},
+		{name: "outbox batch at the limit", mutate: func(c *Config) { c.Outbox.BatchSize = 10 }},
+		{name: "outbox lease too short", mutate: func(c *Config) { c.Outbox.Lease = 500 * time.Millisecond }, wantErr: "OUTBOX_LEASE"},
 		{name: "cors origin ok", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089", "https://docs.example.com"} }},
 		{name: "cors wildcard", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"*"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
 		{name: "cors with a path", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089/ui"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
@@ -109,5 +115,19 @@ func TestNoCORSOriginsByDefault(t *testing.T) {
 	}
 	if len(cfg.CORSAllowedOrigins) != 0 {
 		t.Fatalf("got %v", cfg.CORSAllowedOrigins)
+	}
+}
+
+func TestOutboxDefaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second}
+	if cfg.Outbox != want {
+		t.Fatalf("got %+v, want %+v", cfg.Outbox, want)
 	}
 }

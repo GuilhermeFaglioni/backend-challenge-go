@@ -27,9 +27,10 @@ const (
 )
 
 type schema struct {
-	ctx   context.Context
-	owner *pgx.Conn
-	app   *pgx.Conn
+	ctx    context.Context
+	owner  *pgx.Conn
+	app    *pgx.Conn
+	appDSN string
 }
 
 func newSchema(t *testing.T) *schema {
@@ -37,7 +38,7 @@ func newSchema(t *testing.T) *schema {
 	ctx := t.Context()
 	db := pg.NewDatabase(ctx, t)
 	require.NoError(t, infra.Migrate(db.OwnerDSN))
-	return &schema{ctx: ctx, owner: connect(ctx, t, db.OwnerDSN), app: connect(ctx, t, db.AppDSN)}
+	return &schema{ctx: ctx, owner: connect(ctx, t, db.OwnerDSN), app: connect(ctx, t, db.AppDSN), appDSN: db.AppDSN}
 }
 
 // exec runs the statement on the connection and returns the SQLSTATE of its failure
@@ -549,4 +550,83 @@ func TestOutboxConstraintsAndIndex(t *testing.T) {
 	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = 'outbox' AND indexname = 'outbox_unpublished'`).Scan(&definition))
 	require.Contains(t, definition, "WHERE (published_at IS NULL)", "only unpublished events are indexed")
 	require.Contains(t, definition, "occurred_at")
+}
+
+// --- outbox publishing state -------------------------------------------------------
+
+func (s *schema) outboxEvent(t *testing.T) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	require.Empty(t, s.exec(s.owner, `INSERT INTO outbox (event_id, aggregate_id, event_type, version, payload, correlation_id, causation_id, occurred_at)
+		VALUES ($1, $2, 'WalletBalanceChanged', 1, '{"a":1}', 'corr', 'cause', $3)`, id, uuid.New(), now))
+	return id
+}
+
+func TestOutboxDefaultsAndOrderKey(t *testing.T) {
+	s := newSchema(t)
+	first, second := s.outboxEvent(t), s.outboxEvent(t)
+
+	var attempts int
+	var lockedUntil, publishedAt *time.Time
+	var nextAttempt time.Time
+	var seq1, seq2 int64
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT attempts, next_attempt_at, locked_until, published_at, seq FROM outbox WHERE event_id = $1`, first).
+		Scan(&attempts, &nextAttempt, &lockedUntil, &publishedAt, &seq1))
+	require.Zero(t, attempts)
+	require.Nil(t, lockedUntil)
+	require.Nil(t, publishedAt)
+	require.WithinDuration(t, time.Now(), nextAttempt, time.Minute, "due immediately")
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT seq FROM outbox WHERE event_id = $1`, second).Scan(&seq2))
+	require.Greater(t, seq2, seq1, "events are ordered by insertion")
+
+	require.NotEmpty(t, s.exec(s.owner, `INSERT INTO outbox (event_id, aggregate_id, event_type, version, payload, occurred_at, seq)
+		VALUES (gen_random_uuid(), gen_random_uuid(), 'X', 1, '{}', now(), 1)`), "seq is assigned by the database, never by the writer")
+	require.Equal(t, checkViolation, s.exec(s.owner, `UPDATE outbox SET attempts = -1 WHERE event_id = $1`, first))
+}
+
+func TestOutboxContentIsImmutableAndOnlyPublishingStateMoves(t *testing.T) {
+	s := newSchema(t)
+	id := s.outboxEvent(t)
+
+	for _, change := range []string{
+		`payload = '{"a":2}'`, `event_type = 'Other'`, `version = 2`, `aggregate_id = gen_random_uuid()`,
+		`correlation_id = 'other'`, `causation_id = NULL`, `occurred_at = now()`, `event_id = gen_random_uuid()`,
+	} {
+		require.Equal(t, checkViolation, s.exec(s.owner, `UPDATE outbox SET `+change+` WHERE event_id = $1`, id), change)
+	}
+
+	require.Equal(t, "428C9", s.exec(s.owner, `UPDATE outbox SET seq = seq + 100 WHERE event_id = $1`, id), "the order key is generated, not editable")
+	require.Empty(t, s.exec(s.owner, `UPDATE outbox SET attempts = attempts + 1, next_attempt_at = now() + interval '1 minute',
+		locked_until = now() + interval '30 seconds', last_error = 'boom' WHERE event_id = $1`, id), "the publishing state moves")
+	require.Empty(t, s.exec(s.owner, `UPDATE outbox SET locked_until = NULL WHERE event_id = $1`, id))
+	require.Empty(t, s.exec(s.owner, `UPDATE outbox SET published_at = now() WHERE event_id = $1`, id))
+
+	t.Run("a published event never changes again", func(t *testing.T) {
+		require.Equal(t, checkViolation, s.exec(s.owner, `UPDATE outbox SET published_at = NULL WHERE event_id = $1`, id), "no un-publishing")
+		require.Equal(t, checkViolation, s.exec(s.owner, `UPDATE outbox SET attempts = attempts + 1 WHERE event_id = $1`, id))
+		require.Equal(t, checkViolation, s.exec(s.owner, `UPDATE outbox SET published_at = now() WHERE event_id = $1`, id), "nor a second publication time")
+	})
+}
+
+func TestTheApplicationRoleCanPublishButNotRewrite(t *testing.T) {
+	s := newSchema(t)
+	id := s.outboxEvent(t)
+	require.Empty(t, s.exec(s.app, `UPDATE outbox SET attempts = attempts + 1, last_error = 'x' WHERE event_id = $1`, id))
+	require.Equal(t, checkViolation, s.exec(s.app, `UPDATE outbox SET payload = '{}' WHERE event_id = $1`, id))
+	var n int
+	require.NoError(t, s.app.QueryRow(s.ctx, `SELECT count(*) FROM outbox WHERE published_at IS NULL`).Scan(&n))
+	require.Equal(t, 1, n)
+}
+
+func TestTheOutboxIndexesServeThePublisher(t *testing.T) {
+	s := newSchema(t)
+	for _, c := range []struct{ name, contains string }{
+		{"outbox_due", "(seq)"},
+		{"outbox_unpublished_by_wallet", "(aggregate_id, seq)"},
+	} {
+		var definition string
+		require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = 'outbox' AND indexname = $1`, c.name).Scan(&definition))
+		require.Contains(t, definition, c.contains, c.name)
+		require.Contains(t, definition, "WHERE (published_at IS NULL)", c.name)
+	}
 }
