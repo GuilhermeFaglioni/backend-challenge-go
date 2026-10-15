@@ -14,11 +14,14 @@ import (
 
 // The domain depends on nothing but the standard library, a UUID type and the other
 // domain packages: not Fx, HTTP, SQS, the database or the application layers.
-func TestTheDomainDependsOnNothingButMoneyAndTheStandardLibrary(t *testing.T) {
+func TestTheDomainDependsOnNothingButTheDomainAndTheStandardLibrary(t *testing.T) {
 	allowed := map[string]bool{
-		"errors": true, "fmt": true, "time": true,
+		"bytes": true, "crypto/sha256": true, "encoding/hex": true, "encoding/json": true,
+		"errors": true, "fmt": true, "regexp": true, "slices": true, "strings": true, "time": true,
+		"unicode": true, "unicode/utf8": true,
 		"github.com/google/uuid": true,
-		"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money": true,
+		"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money":  true,
+		"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet": true,
 	}
 	paths, err := filepath.Glob("*.go")
 	require.NoError(t, err)

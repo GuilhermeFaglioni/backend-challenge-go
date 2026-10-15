@@ -227,8 +227,10 @@ func TestTimesAreKeptInUTC(t *testing.T) {
 func processedState(t *testing.T) wager.State {
 	t.Helper()
 	processed := at.Add(time.Second)
+	walletID := uuid.New()
 	return wager.State{
-		ID: uuid.New(), Kind: wager.KindOpening, WalletID: uuid.New(), PlayerID: uuid.New(),
+		RequestedWalletID: walletID, WalletID: walletID,
+		ID: uuid.New(), Kind: wager.KindOpening, PlayerID: uuid.New(),
 		Amount: brl(t, 5000), Status: wager.StatusProcessed,
 		Result:        &wager.Result{Balance: brl(t, 5000), WalletVersion: 1},
 		CorrelationID: "corr-1", CreatedAt: at, UpdatedAt: processed, ProcessedAt: &processed,
@@ -285,7 +287,7 @@ func TestRehydratingRefusesWhatTheDatabaseCouldNeverHold(t *testing.T) {
 		"nil id":         {func(s *wager.State) { s.ID = uuid.Nil }, wager.ErrInvalidID},
 		"nil wallet":     {func(s *wager.State) { s.WalletID = uuid.Nil }, wager.ErrInvalidID},
 		"nil player":     {func(s *wager.State) { s.PlayerID = uuid.Nil }, wager.ErrInvalidID},
-		"unknown kind":   {func(s *wager.State) { s.Kind = "BET" }, wager.ErrInvalidKind},
+		"unknown kind":   {func(s *wager.State) { s.Kind = "TRANSFER" }, wager.ErrInvalidKind},
 		"no kind":        {func(s *wager.State) { s.Kind = "" }, wager.ErrInvalidKind},
 		"bad amount":     {func(s *wager.State) { s.Amount = mustBRL(0) }, wager.ErrInvalidAmount},
 		"unknown status": {func(s *wager.State) { s.Status = "DONE" }, wager.ErrInvalidStatus},

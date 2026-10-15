@@ -1,16 +1,33 @@
 package wager
 
-// Kind says what a Wager Transaction does. Only the internal opening of a wallet
-// exists so far; the kinds an external Operation request can have arrive with the
-// use case that processes them.
+import "slices"
+
+// Kind says what a Wager Transaction does (CONTEXT.md; ARCHITECTURE.md, section 10).
+// OPENING is the internal opening of a wallet and can never come from a provider.
 type Kind string
 
-const KindOpening Kind = "OPENING"
+const (
+	KindOpening  Kind = "OPENING"
+	KindBet      Kind = "BET"
+	KindWin      Kind = "WIN"
+	KindLoss     Kind = "LOSS"
+	KindRefund   Kind = "REFUND"
+	KindRollback Kind = "ROLLBACK"
+)
+
+// externalKinds are the kinds a provider may send.
+var externalKinds = []Kind{KindBet, KindWin, KindLoss, KindRefund, KindRollback}
+
+// IsExternal reports whether a provider may send this kind.
+func (k Kind) IsExternal() bool { return slices.Contains(externalKinds, k) }
 
 // Origin says who started a Wager Transaction.
 type Origin string
 
-const OriginInternal Origin = "INTERNAL"
+const (
+	OriginInternal Origin = "INTERNAL"
+	OriginExternal Origin = "EXTERNAL"
+)
 
 // Status is the state of a Wager Transaction (ARCHITECTURE.md, section 9).
 type Status string
@@ -50,10 +67,3 @@ func (s Status) CanTransitionTo(next Status) bool {
 	}
 	return false
 }
-
-// FailureCode explains a Rejection or a Failure.
-type FailureCode string
-
-// FailureInternalPermanent is the code of a Failure: a permanent defect of the
-// infrastructure, recorded for audit.
-const FailureInternalPermanent FailureCode = "INTERNAL_PERMANENT_FAILURE"
