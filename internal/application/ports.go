@@ -89,6 +89,45 @@ type ExistingTransactions struct {
 	HasByKey, HasByExternalID bool
 }
 
+// Scope limits which transactions a read can reach. It is part of the query, not a
+// check made afterwards: a transaction outside the scope is never read, so a mistake in
+// a handler cannot leak it. The zero Scope reaches nothing.
+type Scope struct {
+	providerID string
+	all        bool
+}
+
+// AllTransactions reaches every transaction, including the internal openings. For the
+// internal service.
+func AllTransactions() Scope { return Scope{all: true} }
+
+// ProviderTransactions reaches only the external transactions of that provider. An empty
+// provider id reaches nothing.
+func ProviderTransactions(providerID string) Scope { return Scope{providerID: providerID} }
+
+func (s Scope) All() bool          { return s.all }
+func (s Scope) ProviderID() string { return s.providerID }
+
+// Reaches reports whether a transaction of that provider ("" for an internal one) is in
+// the scope. Readers apply the same rule in their queries; this is for tests and fakes.
+func (s Scope) Reaches(providerID string) bool {
+	return s.all || (s.providerID != "" && s.providerID == providerID)
+}
+
+// TransactionReader reads Wager Transactions outside any unit of work.
+type TransactionReader interface {
+	// ByID returns the transaction with that id if it is in the scope, else
+	// ErrTransactionNotFound: a transaction that exists but is out of scope is
+	// indistinguishable from one that does not exist.
+	ByID(ctx context.Context, id uuid.UUID, scope Scope) (wager.Transaction, error)
+	// ByExternalID returns the provider's transaction with that external id, or
+	// ErrTransactionNotFound.
+	ByExternalID(ctx context.Context, providerID, externalTransactionID string) (wager.Transaction, error)
+}
+
+// ErrTransactionNotFound: there is no such transaction among those the caller may read.
+var ErrTransactionNotFound = errors.New("transaction not found")
+
 // ErrWalletNotFound: there is no wallet with that id.
 var ErrWalletNotFound = errors.New("wallet not found")
 

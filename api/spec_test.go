@@ -102,3 +102,12 @@ func TestTheIdempotencyKeyIsARequiredHeaderOfTheWageringEndpoint(t *testing.T) {
 	}
 	require.True(t, found)
 }
+
+func TestTheTransactionViewListsEveryFailureCode(t *testing.T) {
+	listed := load(t).Components.Schemas["Transaction"].Value.Properties["failureCode"].Value.Enum
+	var want []any
+	for _, code := range wager.FailureCodes() {
+		want = append(want, string(code))
+	}
+	require.ElementsMatch(t, want, listed, "a read can show a failure as well as a rejection")
+}

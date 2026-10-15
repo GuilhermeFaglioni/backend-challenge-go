@@ -68,6 +68,12 @@ PROVIDER_TOKEN=$(curl -s -X POST http://localhost:8180/realms/wagering/protocol/
 curl -s -X POST localhost:8082/wagering/transactions -H "Authorization: Bearer $PROVIDER_TOKEN" -H 'Idempotency-Key: provider-a:transaction-123' -H 'Content-Type: application/json' -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
 ```
 
+Consultar o resultado, pelo id ou pelo id externo (um provedor só enxerga as próprias transações; as de outro provedor respondem `404`):
+
+```bash
+curl -s localhost:8081/providers/provider-a/wagering/transactions/transaction-123 -H "Authorization: Bearer $PROVIDER_TOKEN"
+```
+
 Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. Por enquanto só o tipo `BET` é processado.
 
 Outros endpoints:

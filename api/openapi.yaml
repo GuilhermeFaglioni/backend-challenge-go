@@ -116,6 +116,96 @@ paths:
         '500': { $ref: '#/components/responses/Internal' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
+  /wagering/transactions/{transactionId}:
+    get:
+      tags: [Wagering]
+      operationId: getTransaction
+      summary: Read a transaction by its id
+      description: |
+        Roles `provider` and `internal`. A provider reads only its own transactions: asking
+        for another provider's, or for one that does not exist, gets the same `404`, so the
+        answer tells nothing about transactions that are not yours. The internal service
+        reads any, including the internal opening of a wallet.
+
+        The response shows where the transaction is: `PENDING_REFERENCE` while it waits for
+        the operation it refers to, `PROCESSED` with the balance seen when it was processed,
+        `REJECTED` or `FAILED` with the `failureCode`.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The transaction.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: There is no such transaction among those the caller may read.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /providers/{providerId}/wagering/transactions/{externalTransactionId}:
+    get:
+      tags: [Wagering]
+      operationId: getTransactionByExternalId
+      summary: Read a provider's transaction by its external id
+      description: |
+        Roles `provider` and `internal`. A provider must ask under its own `providerId`
+        (otherwise `403`); the internal service may ask under any. Transactions are found by
+        `(providerId, externalTransactionId)`, so one provider's identifiers never reach
+        another provider's transactions.
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$' }
+        - name: externalTransactionId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The transaction.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: The provider has no such transaction.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /wallets:
     post:
       tags: [Wallets]
@@ -428,6 +518,60 @@ components:
             - REFERENCE_AMOUNT_MISMATCH
             - REFERENCE_ALREADY_REVERSED
         idempotentReplay: { type: boolean }
+
+    Transaction:
+      type: object
+      required: [transactionId, status, kind, playerId, walletId, money, createdAt, updatedAt]
+      properties:
+        transactionId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [PENDING, PENDING_REFERENCE, PROCESSED, REJECTED, FAILED]
+        kind:
+          type: string
+          enum: [OPENING, BET, WIN, LOSS, REFUND, ROLLBACK]
+        providerId:
+          type: string
+          description: Absent for the internal opening of a wallet.
+        externalTransactionId:
+          type: string
+          description: Absent for the internal opening of a wallet.
+        playerId: { type: string, format: uuid }
+        walletId:
+          type: string
+          format: uuid
+          description: The wallet the operation asked for (which may not exist, for a `WALLET_NOT_FOUND` rejection).
+        roundId: { type: string }
+        gameId: { type: string }
+        money:
+          $ref: '#/components/schemas/Money'
+        referenceExternalTransactionId:
+          type: string
+          description: The operation this one refers to, when it names one.
+        balance:
+          $ref: '#/components/schemas/Money'
+        failureCode:
+          type: string
+          description: Why the operation was rejected, or `INTERNAL_PERMANENT_FAILURE` for a failure. Present only for `REJECTED` and `FAILED`.
+          enum:
+            - INSUFFICIENT_FUNDS
+            - REVERSAL_INSUFFICIENT_FUNDS
+            - WALLET_NOT_FOUND
+            - CURRENCY_MISMATCH
+            - PLAYER_MISMATCH
+            - REFERENCE_NOT_FOUND
+            - REFERENCE_NOT_PROCESSED
+            - REFERENCE_KIND_INVALID
+            - REFERENCE_MISMATCH
+            - REFERENCE_AMOUNT_MISMATCH
+            - REFERENCE_ALREADY_REVERSED
+            - INTERNAL_PERMANENT_FAILURE
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        processedAt:
+          type: string
+          format: date-time
+          description: When the transaction reached its final state; absent while it has not.
 
     ErrorCode:
       type: string
