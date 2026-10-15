@@ -127,7 +127,7 @@ Regra de dependência: `adapters → application → domain`, nunca o contrário
 **Representação:** `int64` em unidades mínimas (centavos) mais um código de moeda ISO 4217. Persistido como `BIGINT` (valor) e `CHAR(3)` (moeda).
 
 - **Escala fixa de 2 casas.** Limitação assumida: moedas com outra escala (JPY, KWD) não são suportadas. O desafio fixa duas casas.
-- **Limites:** `±9.223.372.036.854.775.807` centavos, ou seja, cerca de `92.233.720.368.547.758,07` unidades.
+- **Limites:** o intervalo de um `int64`, de `-9.223.372.036.854.775.808` a `9.223.372.036.854.775.807` centavos, ou seja, de `-92.233.720.368.547.758,08` a `92.233.720.368.547.758,07` unidades. Entrada externa nunca é negativa, então vai de `0,00` a `92.233.720.368.547.758,07`.
 - **Overflow:** `Add`, `Sub`, `Neg` e o parsing verificam estouro antes de operar (por exemplo, `a > MaxInt64 - b`) e retornam `ErrOverflow`. `Neg` de `MinInt64` também é tratado.
 - **Sem ponto flutuante** em nenhuma etapa: o parsing opera sobre a string e converte direto para inteiro; a serialização formata inteiros.
 - **Moedas incompatíveis:** `Add`, `Sub` e comparações retornam `ErrCurrencyMismatch`.
@@ -147,6 +147,14 @@ Regra de dependência: `adapters → application → domain`, nunca o contrário
 Como não aceitamos formas equivalentes, **não há normalização** antes do hash de idempotência: a string canônica é a própria entrada. Nenhuma entrada inválida é arredondada.
 
 Valores negativos existem apenas em cálculos internos; o saldo da carteira é protegido por `CHECK (balance_minor >= 0)`.
+
+**API do pacote `internal/domain/money`** (só biblioteca padrão; a decisão está em [ADR 0003](docs/adr/0003-money-as-int64-minor-units.md)):
+
+- `Parse(amount, currency)` lê entrada externa com o formato estrito e devolve `ErrInvalidFormat`, `ErrNegative` (inclusive `-0.00`), `ErrOverflow` ou `ErrUnknownCurrency`; `FromMinor` e `Zero` constroem a partir de centavos, e só `FromMinor` aceita negativos (diferenças internas).
+- `Add`, `Sub`, `Neg` e `Compare` exigem moedas iguais (`ErrCurrencyMismatch`) e valores inicializados (`ErrUninitialized`); `Add`, `Sub` e `Neg` detectam overflow, inclusive negar o menor valor.
+- O JSON é sempre `{"amount":"25.00","currency":"BRL"}`: o valor é string (nunca número JSON), os dois campos são obrigatórios, campos desconhecidos e dados depois do objeto são recusados, todo erro de decodificação é classificável por `errors.Is` sem expor tipos internos do decodificador, e uma decodificação que falha deixa o receptor como valor zero inválido. A escrita não é o espelho da leitura de propósito: um valor negativo pode ser escrito (a `difference` da reconciliação pode ser negativa), mas nunca é aceito na leitura, como em qualquer entrada externa. O ida e volta exato vale para todo valor válido como entrada externa.
+- Como só existe uma forma textual válida por valor, `Parse(x).String() == x` para tudo que `Parse` aceita; isso é verificado por fuzz.
+- Testes garantem que o pacote não usa `float` (nem em literais, `ParseFloat`, `big.Float` ou `math.Float64bits`) e que não importa nada fora da biblioteca padrão nem, dentro dela, rede, sistema operacional, banco de dados ou C.
 
 ## 5. Modelo de dados e invariantes no banco
 
