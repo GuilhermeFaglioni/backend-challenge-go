@@ -331,12 +331,10 @@ func TestWhatTheUseCaseRefusesForGoodGoesToTheDeadLetterQueue(t *testing.T) {
 		err    error
 		reason sqsconsumer.Reason
 	}{
-		"invalid input":         {fmt.Errorf("%w: %w", processwager.ErrInvalidInput, errors.New("OPENING")), sqsconsumer.ReasonInvalid},
-		"unsupported kind":      {processwager.ErrUnsupportedKind, sqsconsumer.ReasonUnsupportedKind},
-		"unsupported reference": {processwager.ErrReferenceNotSupported, sqsconsumer.ReasonUnsupportedRef},
-		"key conflict":          {processwager.ErrIdempotencyKeyConflict, sqsconsumer.ReasonKeyConflict},
-		"duplicate external":    {processwager.ErrDuplicateExternalTransaction, sqsconsumer.ReasonDuplicateExtID},
-		"message conflict":      {processwager.ErrMessageContentConflict, sqsconsumer.ReasonMessageConflict},
+		"invalid input":      {fmt.Errorf("%w: %w", processwager.ErrInvalidInput, errors.New("OPENING")), sqsconsumer.ReasonInvalid},
+		"key conflict":       {processwager.ErrIdempotencyKeyConflict, sqsconsumer.ReasonKeyConflict},
+		"duplicate external": {processwager.ErrDuplicateExternalTransaction, sqsconsumer.ReasonDuplicateExtID},
+		"message conflict":   {processwager.ErrMessageContentConflict, sqsconsumer.ReasonMessageConflict},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

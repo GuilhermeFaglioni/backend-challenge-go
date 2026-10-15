@@ -248,7 +248,10 @@ func (r transactionRepository) Find(ctx context.Context, providerID, idempotency
 	return found, nil
 }
 
-func scanTransaction(row pgx.Row) (wager.Transaction, error) {
+func scanTransaction(row pgx.Row) (wager.Transaction, error) { return scanTransactionWith(row) }
+
+// scanTransactionWith reads the columns of transactionColumns followed by extra ones.
+func scanTransactionWith(row pgx.Row, extra ...any) (wager.Transaction, error) {
 	var (
 		s                        wager.State
 		kind, currency, status   string
@@ -263,9 +266,10 @@ func scanTransaction(row pgx.Row) (wager.Transaction, error) {
 		correlation              *string
 		processedAt              *time.Time
 	)
-	if err := row.Scan(&s.ID, &kind, &s.RequestedWalletID, &walletID, &s.PlayerID, &amount, &currency, &status, &failure,
+	dest := append([]any{&s.ID, &kind, &s.RequestedWalletID, &walletID, &s.PlayerID, &amount, &currency, &status, &failure,
 		&resultBalance, &resultVer, &providerID, &externalID, &key, &hash, &round, &game, &referenceExternal, &referenceID,
-		&correlation, &s.CreatedAt, &s.UpdatedAt, &processedAt); err != nil {
+		&correlation, &s.CreatedAt, &s.UpdatedAt, &processedAt}, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return wager.Transaction{}, err
 	}
 
@@ -311,6 +315,24 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ResolveReference reads the Reference and whether it has been reversed.
+func (r transactionRepository) ResolveReference(ctx context.Context, providerID, referenceExternalID string) (wager.Reference, error) {
+	var reversed bool
+	row := r.tx.QueryRow(ctx, `SELECT `+transactionColumns+`,
+			EXISTS (SELECT 1 FROM wager_transactions r
+			        WHERE r.reference_transaction_id = wager_transactions.id AND r.kind IN ('REFUND', 'ROLLBACK') AND r.status = 'PROCESSED')
+		FROM wager_transactions
+		WHERE origin = 'EXTERNAL' AND provider_id = $1 AND external_transaction_id = $2`, providerID, referenceExternalID)
+	found, err := scanTransactionWith(row, &reversed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return wager.Reference{}, nil
+	}
+	if err != nil {
+		return wager.Reference{}, fmt.Errorf("resolve reference: %w", err)
+	}
+	return wager.Reference{Found: true, Transaction: found, Reversed: reversed}, nil
 }
 
 // Claim inserts the transaction unless its key or its external id is taken.
@@ -364,21 +386,25 @@ func (r transactionRepository) Claim(ctx context.Context, t wager.Transaction) (
 func (r transactionRepository) Finish(ctx context.Context, t wager.Transaction) error {
 	result, hasResult := t.Result()
 	processedAt, hasProcessedAt := t.ProcessedAt()
-	var resultBalance, resultVersion, failure, processed any
+	var resultBalance, resultVersion, failure, processed, referenceID any
 	if hasResult {
 		resultBalance, resultVersion = result.Balance.Minor(), result.WalletVersion
 	}
 	if code := t.FailureCode(); code != "" {
 		failure = string(code)
 	}
+	if id := t.External().ReferenceTransactionID; id != uuid.Nil {
+		referenceID = id
+	}
 	if hasProcessedAt {
 		processed = processedAt
 	}
 	tag, err := r.tx.Exec(ctx, `
 		UPDATE wager_transactions
-		SET status = $2, failure_code = $3, result_balance_minor = $4, result_wallet_version = $5, updated_at = $6, processed_at = $7
+		SET status = $2, failure_code = $3, result_balance_minor = $4, result_wallet_version = $5, updated_at = $6, processed_at = $7,
+		    reference_transaction_id = $8
 		WHERE id = $1`,
-		t.ID(), string(t.Status()), failure, resultBalance, resultVersion, t.UpdatedAt(), processed)
+		t.ID(), string(t.Status()), failure, resultBalance, resultVersion, t.UpdatedAt(), processed, referenceID)
 	if err != nil {
 		return fmt.Errorf("finish wager transaction: %w", err)
 	}

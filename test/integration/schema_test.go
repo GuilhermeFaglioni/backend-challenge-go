@@ -94,11 +94,22 @@ func (s *schema) external(t *testing.T, walletID, playerID uuid.UUID, provider, 
 	if status == "REJECTED" || status == "FAILED" {
 		failure = "SOME_FAILURE"
 	}
+	// A processed reversal names what it reverses (a check of the schema): give it a BET.
+	var reference any
+	if (kind == "REFUND" || kind == "ROLLBACK") && status == "PROCESSED" {
+		bet := uuid.New()
+		require.Empty(t, s.exec(s.owner, `INSERT INTO wager_transactions
+			(id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash,
+			 requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, created_at, updated_at)
+			VALUES ($1, 'EXTERNAL', 'BET', $2, $3, $3, 'hash', $4, $4, $5, $6, 'BRL', 'PROCESSED', $7, $7)`,
+			bet, provider, "reference-of-"+externalID, walletID, playerID, amount, now))
+		reference = bet
+	}
 	require.Empty(t, s.exec(s.owner, `INSERT INTO wager_transactions
 		(id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash,
-		 requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, failure_code, created_at, updated_at)
-		VALUES ($1, 'EXTERNAL', $2, $3, $4, $5, 'hash', $6, $6, $7, $8, 'BRL', $9, $10, $11, $11)`,
-		id, kind, provider, externalID, key, walletID, playerID, amount, status, failure, now))
+		 requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, failure_code, reference_transaction_id, created_at, updated_at)
+		VALUES ($1, 'EXTERNAL', $2, $3, $4, $5, 'hash', $6, $6, $7, $8, 'BRL', $9, $10, $12, $11, $11)`,
+		id, kind, provider, externalID, key, walletID, playerID, amount, status, failure, now, reference))
 	return id
 }
 
@@ -258,10 +269,12 @@ func TestOnlyOneOpeningPerWallet(t *testing.T) {
 func TestWagerTransactionsAmountRulesPerKind(t *testing.T) {
 	s := newSchema(t)
 	wallet, player := s.wallet(t)
+	// Processed, so every kind is judged by its amount; a reversal also names a Reference.
 	insert := func(kind string, amount int64) string {
 		id := uuid.New()
-		return s.exec(s.owner, `INSERT INTO wager_transactions (id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash, requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, created_at, updated_at)
-			VALUES ($1, 'EXTERNAL', $2, 'p', $1::uuid::text, $1::uuid::text, 'h', $3, $3, $4, $5, 'BRL', 'PROCESSED', $6, $6)`, id, kind, wallet, player, amount, now)
+		bet := s.external(t, wallet, player, "p", "k-ref-"+id.String(), "e-ref-"+id.String(), "BET", 100, "PROCESSED")
+		return s.exec(s.owner, `INSERT INTO wager_transactions (id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash, requested_wallet_id, wallet_id, player_id, amount_minor, currency, reference_transaction_id, status, created_at, updated_at)
+			VALUES ($1, 'EXTERNAL', $2, 'p', $1::uuid::text, $1::uuid::text, 'h', $3, $3, $4, $5, 'BRL', CASE WHEN $2 IN ('REFUND', 'ROLLBACK') THEN $7::uuid END, 'PROCESSED', $6, $6)`, id, kind, wallet, player, amount, now, bet)
 	}
 	for _, kind := range []string{"BET", "WIN", "REFUND", "ROLLBACK"} {
 		require.Equal(t, checkViolation, insert(kind, 0), "%s needs a positive amount", kind)
@@ -705,4 +718,82 @@ func TestAnEntryForATransactionThatDoesNotExistIsStillAForeignKeyError(t *testin
 	walletID, _ := s.wallet(t)
 	require.Equal(t, foreignKeyError, s.exec(s.owner, `INSERT INTO wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount_minor, balance_before_minor, balance_after_minor, created_at)
 		VALUES ($1, $2, $3, 'CREDIT', 100, 0, 100, $4)`, uuid.New(), walletID, uuid.New(), now))
+}
+
+// reversal inserts an external reversal (or a WIN) naming a Reference, in a status.
+func (s *schema) reversal(c *pgx.Conn, walletID, playerID uuid.UUID, kind, status string, reference any) (uuid.UUID, string) {
+	id := uuid.New()
+	var failure any
+	if status == "REJECTED" {
+		failure = "REFERENCE_NOT_FOUND"
+	}
+	return id, s.exec(c, `INSERT INTO wager_transactions
+		(id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash, requested_wallet_id, wallet_id, player_id,
+		 amount_minor, currency, reference_external_transaction_id, reference_transaction_id, status, failure_code, created_at, updated_at)
+		VALUES ($1, 'EXTERNAL', $2, 'p', $1::uuid::text, $1::uuid::text, 'h', $3, $3, $4, 100, 'BRL', 'x', $5, $6, $7, $8, $8)`,
+		id, kind, walletID, playerID, reference, status, failure, now)
+}
+
+func TestOnlyOneProcessedReversalPerReference(t *testing.T) {
+	s := newSchema(t)
+	walletID, playerID := s.wallet(t)
+	bet := s.external(t, walletID, playerID, "p", "k-bet", "e-bet", "BET", 100, "PROCESSED")
+	other := s.external(t, walletID, playerID, "p", "k-bet2", "e-bet2", "BET", 100, "PROCESSED")
+
+	_, state := s.reversal(s.owner, walletID, playerID, "REFUND", "PROCESSED", bet)
+	require.Empty(t, state, "the first reversal of a Reference")
+
+	for _, kind := range []string{"REFUND", "ROLLBACK"} {
+		_, state = s.reversal(s.owner, walletID, playerID, kind, "PROCESSED", bet)
+		require.Equal(t, uniqueViolation, state, "a second processed %s of the same Reference, of either kind", kind)
+	}
+	_, state = s.reversal(s.owner, walletID, playerID, "ROLLBACK", "PROCESSED", other)
+	require.Empty(t, state, "another Reference has its own")
+
+	// What the index does not cover: the ones that did not take effect, and a WIN, which is not a reversal.
+	_, state = s.reversal(s.owner, walletID, playerID, "REFUND", "REJECTED", bet)
+	require.Empty(t, state, "a rejected reversal changed nothing")
+	_, state = s.reversal(s.owner, walletID, playerID, "REFUND", "PENDING", bet)
+	require.Empty(t, state, "and one that has not been decided")
+	_, state = s.reversal(s.owner, walletID, playerID, "WIN", "PROCESSED", bet)
+	require.Empty(t, state, "a WIN may name the BET it pays")
+	_, state = s.reversal(s.owner, walletID, playerID, "WIN", "PROCESSED", bet)
+	require.Empty(t, state, "as many times as the provider wins on it")
+}
+
+// The index also stands at the moment a pending reversal is decided, which is when the
+// application writes the outcome.
+func TestTwoReversalsDecidedAtOnceCannotBothBeProcessed(t *testing.T) {
+	s := newSchema(t)
+	walletID, playerID := s.wallet(t)
+	bet := s.external(t, walletID, playerID, "p", "k-bet", "e-bet", "BET", 100, "PROCESSED")
+	first, state := s.reversal(s.owner, walletID, playerID, "REFUND", "PENDING", bet)
+	require.Empty(t, state)
+	second, state := s.reversal(s.owner, walletID, playerID, "ROLLBACK", "PENDING", bet)
+	require.Empty(t, state)
+
+	other := connect(s.ctx, t, s.appDSN)
+	one, err := s.owner.Begin(s.ctx)
+	require.NoError(t, err)
+	_, err = one.Exec(s.ctx, `UPDATE wager_transactions SET status = 'PROCESSED', processed_at = $2 WHERE id = $1`, first, now)
+	require.NoError(t, err)
+
+	result := make(chan string, 1)
+	go func() {
+		result <- s.inTx(t, other, run(`UPDATE wager_transactions SET status = 'PROCESSED', processed_at = $2 WHERE id = $1`, second, now))
+	}()
+	require.NoError(t, one.Commit(s.ctx))
+
+	require.Equal(t, uniqueViolation, <-result, "the second waits for the first and then finds the Reference reversed")
+}
+
+func TestAProcessedReversalMustNameItsReference(t *testing.T) {
+	s := newSchema(t)
+	walletID, playerID := s.wallet(t)
+	for _, kind := range []string{"REFUND", "ROLLBACK"} {
+		_, state := s.reversal(s.owner, walletID, playerID, kind, "PROCESSED", nil)
+		require.Equal(t, checkViolation, state, "%s processed without a Reference would slip past the unique index", kind)
+		_, state = s.reversal(s.owner, walletID, playerID, kind, "REJECTED", nil)
+		require.Empty(t, state, "a refusal may not have found one")
+	}
 }

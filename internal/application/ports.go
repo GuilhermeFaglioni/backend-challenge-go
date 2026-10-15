@@ -61,6 +61,13 @@ type TransactionRepository interface {
 	// look like two different ones. Keys and ids are scoped by provider: one provider
 	// never sees another's.
 	Find(ctx context.Context, providerID, idempotencyKey, externalTransactionID string) (ExistingTransactions, error)
+	// ResolveReference finds the provider's transaction with this external id, the
+	// Reference of an operation, and says whether a processed Reversal already points at
+	// it. One statement, so the two answers come from the same snapshot. A Reference not
+	// found is the zero wager.Reference, not an error. The caller holds the lock of the
+	// wallet, and a Reference the operation can act on is on that wallet, so what it reads
+	// there is final.
+	ResolveReference(ctx context.Context, providerID, referenceExternalID string) (wager.Reference, error)
 	// Claim stores the transaction, taking its idempotency key and its external id,
 	// unless either is already taken: then it stores nothing and returns false. It
 	// waits for a concurrent claim of the same key to end, so the answer is final.

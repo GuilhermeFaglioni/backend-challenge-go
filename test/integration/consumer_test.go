@@ -220,13 +220,13 @@ func TestWhatCanNeverBeHandledGoesToTheDeadLetterQueueWithoutBlockingItsGroup(t 
 
 	// All in one message group: each bad message is followed by a good one that must not wait.
 	bad := map[string]string{
-		"malformed":                `{"messageId":`,
-		"unknown type":             strings.Replace(requestBody("msg-type", w, "tx-t", "provider-a:tx-t", "BET", "1.00"), "WagerTransactionRequested", "SomethingElse", 1),
-		"opening":                  requestBody("msg-opening", w, "tx-o", "provider-a:tx-o", "OPENING", "1.00"),
-		"invalid amount":           requestBody("msg-amount", w, "tx-a", "provider-a:tx-a", "BET", "1.5"),
-		"zero bet":                 requestBody("msg-zero", w, "tx-z", "provider-a:tx-z", "BET", "0.00"),
-		"a win naming a reference": strings.Replace(requestBody("msg-win", w, "tx-w", "provider-a:tx-w", "WIN", "1.00"), `"roundId"`, `"referenceExternalTransactionId":"tx-0","roundId"`, 1),
-		"a reversal":               strings.Replace(requestBody("msg-refund", w, "tx-r", "provider-a:tx-r", "REFUND", "1.00"), `"roundId"`, `"referenceExternalTransactionId":"tx-0","roundId"`, 1),
+		"malformed":                    `{"messageId":`,
+		"unknown type":                 strings.Replace(requestBody("msg-type", w, "tx-t", "provider-a:tx-t", "BET", "1.00"), "WagerTransactionRequested", "SomethingElse", 1),
+		"opening":                      requestBody("msg-opening", w, "tx-o", "provider-a:tx-o", "OPENING", "1.00"),
+		"invalid amount":               requestBody("msg-amount", w, "tx-a", "provider-a:tx-a", "BET", "1.5"),
+		"zero bet":                     requestBody("msg-zero", w, "tx-z", "provider-a:tx-z", "BET", "0.00"),
+		"a bet naming a reference":     strings.Replace(requestBody("msg-ref", w, "tx-ref", "provider-a:tx-ref", "BET", "1.00"), `"roundId"`, `"referenceExternalTransactionId":"tx-0","roundId"`, 1),
+		"a refund without a reference": requestBody("msg-refund", w, "tx-r", "provider-a:tx-r", "REFUND", "1.00"),
 	}
 	reasons := map[string]string{}
 	n := 0
@@ -249,11 +249,11 @@ func TestWhatCanNeverBeHandledGoesToTheDeadLetterQueueWithoutBlockingItsGroup(t 
 		require.NotEmpty(t, l.Attributes["errorDetail"])
 		require.NotEmpty(t, l.Body, "the message travels as it came")
 	}
-	require.Equal(t, map[string]int{"malformed": 1, "unknown_type": 1, "invalid": 3, "unsupported_kind": 1, "unsupported_reference": 1}, seen)
+	require.Equal(t, map[string]int{"malformed": 1, "unknown_type": 1, "invalid": 5}, seen)
 	require.EqualValues(t, len(bad), a.metric(t, `sqs_messages_handled_total{result="dead_lettered"}`))
 	require.EqualValues(t, 1, a.metric(t, `sqs_dead_letters_total{reason="malformed"}`))
 	var stored int
-	require.NoError(t, a.pool.QueryRow(t.Context(), `SELECT count(*) FROM inbox WHERE message_id IN ('msg-type','msg-opening','msg-amount','msg-zero','msg-win','msg-refund')`).Scan(&stored))
+	require.NoError(t, a.pool.QueryRow(t.Context(), `SELECT count(*) FROM inbox WHERE message_id IN ('msg-type','msg-opening','msg-amount','msg-zero','msg-ref','msg-refund')`).Scan(&stored))
 	require.Zero(t, stored, "a message that could not be handled leaves no trace but the dead letter")
 }
 

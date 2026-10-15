@@ -27,7 +27,9 @@ type transactionJSON struct {
 	WalletID              string `json:"walletId"`
 	FailureCode           string `json:"failureCode"`
 	ProcessedAt           string `json:"processedAt"`
-	Balance               *struct {
+	// The Reference the operation named, when it named one.
+	ReferenceExternalTransactionID string `json:"referenceExternalTransactionId"`
+	Balance                        *struct {
 		Amount string `json:"amount"`
 	} `json:"balance"`
 	Error struct {
