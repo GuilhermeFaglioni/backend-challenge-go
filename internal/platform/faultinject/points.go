@@ -35,11 +35,18 @@ const (
 	// and committed, and before it deleted the message: the work is done but the queue
 	// still holds the message, so it is delivered again and must change nothing.
 	ConsumerAfterCommit Point = "consumer_after_commit"
+	// PendingAfterCommit is reached right after an operation that is waiting for its
+	// Reference was committed as such, before the caller was answered: the wait is stored
+	// and no one has been told, and a worker of another instance must take it up.
+	PendingAfterCommit Point = "pending_after_commit"
+	// PendingAfterReserve is reached by the pending-reference worker after it reserved a
+	// batch and before it tried anything: the operations are leased and untouched.
+	PendingAfterReserve Point = "pending_after_reserve"
 )
 
 // Points lists every point. Adding a constant above without adding it here is
 // caught by a test, so a point cannot exist in the code and be unknown to the
 // `faultinject` build.
 func Points() []Point {
-	return []Point{HTTPBeforeListen, HTTPAfterListen, OutboxAfterReserve, OutboxAfterPublish, ConsumerAfterCommit}
+	return []Point{HTTPBeforeListen, HTTPAfterListen, OutboxAfterReserve, OutboxAfterPublish, ConsumerAfterCommit, PendingAfterCommit, PendingAfterReserve}
 }

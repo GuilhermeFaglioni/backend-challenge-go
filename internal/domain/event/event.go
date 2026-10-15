@@ -18,6 +18,7 @@ import (
 const (
 	typeWagerTransactionProcessed = "WagerTransactionProcessed"
 	typeWagerTransactionRejected  = "WagerTransactionRejected"
+	typeWagerTransactionPending   = "WagerTransactionPendingReference"
 	typeWalletBalanceChanged      = "WalletBalanceChanged"
 )
 
@@ -257,6 +258,60 @@ func NewWagerTransactionRejected(m Meta, d WagerTransactionRejectedData) (Event,
 		return Event{}, ErrInvalidMoney
 	case !d.FailureCode.IsRejection():
 		return Event{}, ErrInvalidFailureCode
+	}
+	return newEvent(m, d)
+}
+
+// --- WagerTransactionPendingReference ----------------------------------------------
+
+// WagerTransactionPendingReferenceData says that an external operation is waiting for
+// the Reference it names, which has not arrived. It ends later in WagerTransactionProcessed
+// or WagerTransactionRejected for the same transaction.
+type WagerTransactionPendingReferenceData struct {
+	TransactionID                  uuid.UUID   `json:"transactionId"`
+	WalletID                       uuid.UUID   `json:"walletId"`
+	PlayerID                       uuid.UUID   `json:"playerId"`
+	Kind                           wager.Kind  `json:"kind"`
+	ProviderID                     string      `json:"providerId"`
+	ExternalTransactionID          string      `json:"externalTransactionId"`
+	RoundID                        string      `json:"roundId"`
+	GameID                         string      `json:"gameId"`
+	ReferenceExternalTransactionID string      `json:"referenceExternalTransactionId"`
+	Money                          money.Money `json:"money"`
+	// ExpiresAt is when the wait ends: the operation is then refused if its Reference
+	// has not come.
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+func (WagerTransactionPendingReferenceData) eventType() string { return typeWagerTransactionPending }
+func (WagerTransactionPendingReferenceData) eventVersion() int { return 1 }
+func (d WagerTransactionPendingReferenceData) aggregateID() uuid.UUID {
+	return d.WalletID
+}
+
+// MarshalJSON writes the expiry in the envelope's time format.
+func (d WagerTransactionPendingReferenceData) MarshalJSON() ([]byte, error) {
+	type plain WagerTransactionPendingReferenceData
+	return json.Marshal(struct {
+		plain
+		ExpiresAt string `json:"expiresAt"`
+	}{plain: plain(d), ExpiresAt: d.ExpiresAt.UTC().Format(timeLayout)})
+}
+
+// NewWagerTransactionPendingReference builds the event, refusing data that does not hold
+// together.
+func NewWagerTransactionPendingReference(m Meta, d WagerTransactionPendingReferenceData) (Event, error) {
+	switch {
+	case d.TransactionID == uuid.Nil || d.WalletID == uuid.Nil || d.PlayerID == uuid.Nil:
+		return Event{}, ErrInvalidID
+	case d.Kind == "" || d.Kind == wager.KindOpening:
+		return Event{}, ErrInvalidKind
+	case !hasExactlyTheMetadataOf(wager.OriginExternal, d.ProviderID, d.ExternalTransactionID, d.RoundID, d.GameID, d.ReferenceExternalTransactionID):
+		return Event{}, fmt.Errorf("%w: a waiting operation always comes from a provider and names a reference", ErrInvalidKind)
+	case !d.Money.IsValid() || d.Money.IsNegative():
+		return Event{}, ErrInvalidMoney
+	case d.ExpiresAt.IsZero() || !d.ExpiresAt.After(m.OccurredAt):
+		return Event{}, ErrInvalidTime
 	}
 	return newEvent(m, d)
 }

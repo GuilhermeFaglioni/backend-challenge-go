@@ -382,6 +382,28 @@ status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" 
 [ "$(json_get failureCode < "$SMOKE_BODY")" = "REFERENCE_ALREADY_REVERSED" ] || fail "the rollback was refused with $(json_get failureCode < "$SMOKE_BODY")"
 ok "a refund returns the bet (105.00) and a second reversal of it is refused (REFERENCE_ALREADY_REVERSED)"
 
+# A reversal that arrives before its bet is accepted as waiting (202), and a worker applies it
+# once the bet is there.
+early_body="{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-refund-3\",\"referenceExternalTransactionId\":\"smoke-bet-3\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"REFUND\",\"money\":{\"amount\":\"7.00\",\"currency\":\"BRL\"}}"
+status=$(api_status POST "$second_port" /wagering/transactions "$provider_token" "$early_body" 'Idempotency-Key: smoke-refund-key-3')
+[ "$status" = "202" ] || fail "a refund of a bet that is not there yet answered ${status}, not 202: $(cat "$SMOKE_BODY")"
+[ "$(json_get status < "$SMOKE_BODY")" = "PENDING_REFERENCE" ] || fail "the early refund is not PENDING_REFERENCE"
+late_bet="${early_body/smoke-refund-3/smoke-bet-3}"
+late_bet="${late_bet/REFUND/BET}"
+late_bet="${late_bet/\"referenceExternalTransactionId\":\"smoke-bet-3\",/}"
+status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" "$late_bet" 'Idempotency-Key: smoke-bet-key-3')
+[ "$status" = "200" ] || fail "the late bet answered ${status}: $(cat "$SMOKE_BODY")"
+early_refund_processed() {
+  local status
+  status=$(api_status GET "$second_port" "/providers/provider-a/wagering/transactions/smoke-refund-3" "$provider_token") && [ "$status" = "200" ] \
+    && [ "$(json_get status < "$SMOKE_BODY")" = "PROCESSED" ]
+}
+wait_for "the early refund to be applied by a worker" early_refund_processed
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "105.00" ] || fail "the early refund left $(json_get balance.amount < "$SMOKE_BODY"), not 105.00"
+status=$(api_status POST "$second_port" "/wallets/${wallet_id}/reconciliation" "$internal_token")
+[ "$(json_get consistent < "$SMOKE_BODY")" = "True" ] || fail "the books do not agree after the early refund"
+ok "a reversal that arrived before its bet waited (202) and was applied by a worker once the bet came (105.00), books in agreement"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"

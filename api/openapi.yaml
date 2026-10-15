@@ -57,13 +57,13 @@ paths:
 
         Every kind is processed. `REFUND` and `ROLLBACK` (the Reversals) name the operation
         they reverse in `referenceExternalTransactionId`, which is looked for among the
-        provider's own transactions. The Reference decides, in this order: not found
-        (`REFERENCE_NOT_FOUND`), ended without success (`REFERENCE_NOT_PROCESSED`), a kind this
+        provider's own transactions. The Reference decides, in this order: not found yet (the
+        operation waits: `202`), ended without success (`REFERENCE_NOT_PROCESSED`), a kind this
         cannot act on (`REFERENCE_KIND_INVALID`), another player, wallet, currency or round
         (`REFERENCE_MISMATCH`), another amount (`REFERENCE_AMOUNT_MISMATCH`), already reversed
         (`REFERENCE_ALREADY_REVERSED`). A reversal that would take the balance below zero is
         `REVERSAL_INSUFFICIENT_FUNDS`. A `WIN` may name the `BET` it pays, of the same round, and
-        is never a Reversal. All of these are stored `422` results. `OPENING` is reserved to the
+        is never a Reversal. A Reference that has not arrived is waited for (`202`, see below); all the other refusals are stored `422` results. `OPENING` is reserved to the
         internal opening of a wallet and is always `400`.
 
         A `LOSS` moves no money: it answers `200` with the wallet's balance, writes no
@@ -133,6 +133,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcessedOperation'
+        '202':
+          description: |
+            The operation names a Reference (`referenceExternalTransactionId`) that has not
+            arrived. It is stored and waits for it, trying again with growing gaps for up to 10
+            attempts or 15 minutes. It ends as `PROCESSED`, or as `REJECTED` with
+            `REFERENCE_NOT_FOUND` (the Reference never appeared) or `REFERENCE_NOT_PROCESSED`
+            (it appeared and never completed). Read the result with
+            `GET /wagering/transactions/{transactionId}`. Sending it again answers `202` with the
+            same `transactionId` while it waits, and the final answer after.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingOperation'
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -626,6 +642,14 @@ components:
           description: |
             Required for `REFUND` and `ROLLBACK`, optional for `WIN`, not allowed otherwise.
             It is the external id of an earlier operation of the same provider.
+
+    PendingOperation:
+      type: object
+      required: [transactionId, status, idempotentReplay]
+      properties:
+        transactionId: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING_REFERENCE] }
+        idempotentReplay: { type: boolean }
 
     ProcessedOperation:
       type: object

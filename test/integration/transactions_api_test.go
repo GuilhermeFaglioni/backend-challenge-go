@@ -3,19 +3,12 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/postgres"
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money"
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wager"
 )
 
 type transactionJSON struct {
@@ -166,32 +159,12 @@ func balanceOf(t *testing.T, a walletAPI, id string) (balance, version int64) {
 	return balance, version
 }
 
-// There is no way yet to reach PENDING_REFERENCE through the API, so the row is stored
-// with the repository the way the pending-reference flow will.
 func TestAPendingTransactionIsReadAsPending(t *testing.T) {
 	a := startWalletAPI(t)
 	w := a.openFunded(t, "100.00")
-	walletID := uuid.MustParse(w.id)
-	playerID := uuid.MustParse(w.player)
-	amount, err := money.FromMinor(1000, money.BRL)
-	require.NoError(t, err)
-	request, err := wager.NewRequest(wager.RequestParams{
-		ProviderID: "provider-a", ExternalTransactionID: "tx-refund", PlayerID: playerID, WalletID: walletID,
-		RoundID: "round-1", GameID: "game-1", Kind: wager.KindRefund, Amount: amount, ReferenceExternalTransactionID: "tx-not-here-yet",
-	})
-	require.NoError(t, err)
-	pending, err := wager.New(wager.NewParams{ID: uuid.New(), Request: request, IdempotencyKey: "k-refund", CorrelationID: "c", At: time.Now()})
-	require.NoError(t, err)
-	waiting, err := pending.AwaitReference(time.Now())
-	require.NoError(t, err)
+	waiting := a.requireWaiting(t, w, "tx-refund", "REFUND", "10.00", "tx-not-here-yet")
 
-	uow := postgres.NewUnitOfWork(a.pool)
-	require.NoError(t, uow.Do(t.Context(), func(ctx context.Context, repos application.Repositories) error {
-		_, err := repos.Transactions().Claim(ctx, waiting)
-		return err
-	}))
-
-	status, _, _, tx := a.read(t, a.strict, a.provider, "/wagering/transactions/"+waiting.ID().String())
+	status, _, _, tx := a.read(t, a.strict, a.provider, "/wagering/transactions/"+waiting.TransactionID)
 	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, "PENDING_REFERENCE", tx.Status)
 	require.Nil(t, tx.Balance)

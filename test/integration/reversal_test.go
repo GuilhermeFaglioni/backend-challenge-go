@@ -49,6 +49,16 @@ func (a walletAPI) requireRefusal(t *testing.T, w apiWallet, externalID, kind, a
 	require.Equal(t, code, answer.FailureCode, "%s %s", kind, externalID)
 }
 
+// requireWaiting: the operation was accepted and waits for its Reference (202).
+func (a walletAPI) requireWaiting(t *testing.T, w apiWallet, externalID, kind, amount, reference string) operationAnswer {
+	t.Helper()
+	status, answer := a.send(t, a.strict, w, externalID, kind, amount, reference)
+	require.Equal(t, http.StatusAccepted, status, "%s %s: %+v", kind, externalID, answer)
+	require.Equal(t, "PENDING_REFERENCE", answer.Status)
+	require.NotEmpty(t, answer.TransactionID)
+	return answer
+}
+
 func (a walletAPI) reversalsOf(t *testing.T, transactionID string) int {
 	t.Helper()
 	var n int
@@ -126,7 +136,7 @@ func TestEachRuleOfTheTableOfReferencesAnswersWithItsOwnCode(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	a.mustProcess(t, other, "bet-other", "BET", "5.00", "")
 
-	a.requireRefusal(t, w, "r-notfound", "REFUND", "30.00", "never-seen", "REFERENCE_NOT_FOUND")
+	a.requireWaiting(t, w, "r-notfound", "REFUND", "30.00", "never-seen") // not refused: it waits for its Reference
 	a.requireRefusal(t, w, "r-notprocessed", "REFUND", "500.00", "bet-big", "REFERENCE_NOT_PROCESSED")
 	a.requireRefusal(t, w, "r-kind-win", "REFUND", "10.00", "win-1", "REFERENCE_KIND_INVALID")
 	a.requireRefusal(t, w, "r-kind-loss", "ROLLBACK", "0.01", "loss-1", "REFERENCE_KIND_INVALID")
@@ -166,10 +176,10 @@ func TestAReferenceIsLookedForAmongTheProvidersOwnTransactionsOnly(t *testing.T)
 	body := strings.Replace(operationRef(w, "refund-b", "REFUND", "30.00", "bet-1"), `"provider-a"`, `"provider-b"`, 1)
 	status, _, answer := a.submit(t, a.strict, a.providerB, "provider-b:refund-b", body)
 
-	require.Equal(t, http.StatusUnprocessableEntity, status)
-	require.Equal(t, "REFERENCE_NOT_FOUND", answer.FailureCode, "provider-b cannot reverse, nor learn of, provider-a's bet")
+	require.Equal(t, http.StatusAccepted, status, "to provider-b the bet does not exist (yet): it waits")
+	require.Equal(t, "PENDING_REFERENCE", answer.Status)
 	balance, _ := a.wallet(t, w)
-	require.Equal(t, int64(7000), balance)
+	require.Equal(t, int64(7000), balance, "and nothing of provider-a's is touched")
 	a.requireConsistent(t, w)
 	a.strict.requireNoViolations()
 }

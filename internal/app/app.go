@@ -14,6 +14,7 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/httpapi"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/outbox"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/pendingref"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/postgres"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsclient"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsconsumer"
@@ -46,6 +47,7 @@ func New(cfg config.Config) fx.Option {
 		sqspublisher.Module,
 		outbox.Module,
 		sqsconsumer.Module,
+		pendingref.Module,
 		httpapi.Module,
 	)
 }

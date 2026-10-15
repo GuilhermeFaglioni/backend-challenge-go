@@ -94,6 +94,14 @@ func (t *txRepo) ResolveReference(context.Context, string, string) (wager.Refere
 	panic("openwallet resolves no reference")
 }
 
+func (t *txRepo) ReadPending(context.Context, uuid.UUID) (wager.Transaction, application.PendingSchedule, bool, error) {
+	panic("openwallet reads no pending transaction")
+}
+
+func (t *txRepo) Await(context.Context, wager.Transaction, application.PendingSchedule) error {
+	panic("openwallet waits for no reference")
+}
+
 func (t *txRepo) Claim(context.Context, wager.Transaction) (bool, error) {
 	panic("openwallet claims no idempotency key")
 }

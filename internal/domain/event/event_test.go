@@ -493,3 +493,62 @@ func TestEveryRejectionCodeMakesAValidEvent(t *testing.T) {
 		require.NoError(t, err, code)
 	}
 }
+
+// --- WagerTransactionPendingReference -------------------------------------------------
+
+func pendingData(t *testing.T) event.WagerTransactionPendingReferenceData {
+	t.Helper()
+	return event.WagerTransactionPendingReferenceData{
+		TransactionID: transactionID, WalletID: walletID, PlayerID: playerID, Kind: wager.KindRefund,
+		ProviderID: "provider-a", ExternalTransactionID: "refund-1", RoundID: "round-987", GameID: "fortune-chimp",
+		ReferenceExternalTransactionID: "transaction-123", Money: brl(t, 2500),
+		ExpiresAt: time.Date(2026, 10, 14, 12, 15, 0, 0, time.UTC),
+	}
+}
+
+func TestAPendingReferenceEventSaysWhatIsWaitedForAndUntilWhen(t *testing.T) {
+	e, err := event.NewWagerTransactionPendingReference(meta(), pendingData(t))
+	require.NoError(t, err)
+	require.Equal(t, "WagerTransactionPendingReference", e.Type())
+	require.Equal(t, 1, e.Version())
+	require.Equal(t, walletID, e.AggregateID())
+
+	got, err := json.Marshal(e)
+	require.NoError(t, err)
+	want := `{"eventId":"11111111-1111-4111-8111-111111111111","eventType":"WagerTransactionPendingReference",` +
+		`"aggregateId":"22222222-2222-4222-8222-222222222222","correlationId":"corr-1","causationId":"cause-1",` +
+		`"occurredAt":"2026-10-14T12:00:00.123Z","version":1,` +
+		`"data":{"transactionId":"33333333-3333-4333-8333-333333333333","walletId":"22222222-2222-4222-8222-222222222222",` +
+		`"playerId":"44444444-4444-4444-8444-444444444444","kind":"REFUND","providerId":"provider-a","externalTransactionId":"refund-1",` +
+		`"roundId":"round-987","gameId":"fortune-chimp","referenceExternalTransactionId":"transaction-123",` +
+		`"money":{"amount":"25.00","currency":"BRL"},"expiresAt":"2026-10-14T12:15:00.000Z"}}`
+	require.Equal(t, want, string(got))
+}
+
+func TestAPendingReferenceEventRefusesBadData(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*event.WagerTransactionPendingReferenceData)
+		want   error
+	}{
+		"nil transaction":     {func(d *event.WagerTransactionPendingReferenceData) { d.TransactionID = uuid.Nil }, event.ErrInvalidID},
+		"nil wallet":          {func(d *event.WagerTransactionPendingReferenceData) { d.WalletID = uuid.Nil }, event.ErrInvalidID},
+		"an opening":          {func(d *event.WagerTransactionPendingReferenceData) { d.Kind = wager.KindOpening }, event.ErrInvalidKind},
+		"no kind":             {func(d *event.WagerTransactionPendingReferenceData) { d.Kind = "" }, event.ErrInvalidKind},
+		"no provider":         {func(d *event.WagerTransactionPendingReferenceData) { d.ProviderID = "" }, event.ErrInvalidKind},
+		"no reference":        {func(d *event.WagerTransactionPendingReferenceData) { d.ReferenceExternalTransactionID = "" }, event.ErrInvalidKind},
+		"negative money":      {func(d *event.WagerTransactionPendingReferenceData) { d.Money = mustBRL(-1) }, event.ErrInvalidMoney},
+		"uninitialized money": {func(d *event.WagerTransactionPendingReferenceData) { d.Money = money.Money{} }, event.ErrInvalidMoney},
+		"no expiry":           {func(d *event.WagerTransactionPendingReferenceData) { d.ExpiresAt = time.Time{} }, event.ErrInvalidTime},
+		"an expiry that has passed": {func(d *event.WagerTransactionPendingReferenceData) {
+			d.ExpiresAt = occurredAt
+		}, event.ErrInvalidTime},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := pendingData(t)
+			c.mutate(&d)
+			_, err := event.NewWagerTransactionPendingReference(meta(), d)
+			require.ErrorIs(t, err, c.want)
+		})
+	}
+}

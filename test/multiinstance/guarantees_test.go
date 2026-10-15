@@ -46,6 +46,16 @@ func startGuarantees(t *testing.T) *guarantees {
 
 func (g *guarantees) on(i int) *infra.Instance { return g.instances[i%len(g.instances)] }
 
+// alive is like on, but skips the processes that have died.
+func (g *guarantees) alive(i int) *infra.Instance {
+	for offset := range len(g.instances) {
+		if instance := g.on(i + offset); instance.Running() {
+			return instance
+		}
+	}
+	return g.on(i)
+}
+
 type wallet struct{ id, player string }
 
 type answer struct {
@@ -160,7 +170,7 @@ func (g *guarantees) books(t *testing.T, w wallet) (balance, debits int64) {
 		WHERE previous_after IS NOT NULL AND previous_after <> balance_before_minor`, w.id).Scan(&broken))
 	require.Zero(t, broken, "wallet %s: the entries do not chain, each starting where the one before ended", w.id)
 
-	stored, calculated, consistent := g.reconcile(t, g.on(int(version)), w)
+	stored, calculated, consistent := g.reconcile(t, g.alive(int(version)), w)
 	require.True(t, consistent, "wallet %s: the reconciliation endpoint finds the books apart (stored %s, calculated %s)", w.id, stored, calculated)
 	require.Equal(t, fmt.Sprintf("%d.%02d", balance/100, balance%100), stored, "wallet %s: the endpoint reads the balance the test read", w.id)
 	return balance, debits
@@ -440,6 +450,24 @@ func TestMixedOperationsAcrossThreeProcessesAddUpOnce(t *testing.T) {
 	var version int64
 	require.NoError(t, g.h.owner.QueryRow(t.Context(), `SELECT version FROM wallets WHERE id = $1`, w.id).Scan(&version))
 	require.Equal(t, int64(1+rounds*2), version, "the opening, each bet and each win, once; no loss")
+}
+
+// tryReverse sends a reversal and does not insist on an answer: for a process that is
+// about to be killed on purpose.
+func (g *guarantees) tryReverse(t *testing.T, instance *infra.Instance, w wallet, externalID, kind, amount, reference string) error {
+	t.Helper()
+	body := fmt.Sprintf(`{"providerId":"provider-a","externalTransactionId":%q,"referenceExternalTransactionId":%q,"playerId":%q,"walletId":%q,"roundId":"round-1","gameId":"game-1","kind":%q,"money":{"amount":%q,"currency":"BRL"}}`,
+		externalID, reference, w.player, w.id, kind, amount)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+instance.Addr+"/wagering/transactions", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+g.provider)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "provider-a:"+externalID)
+	resp, err := g.client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	return err
 }
 
 // --- reversals -----------------------------------------------------------------------
