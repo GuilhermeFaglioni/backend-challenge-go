@@ -43,6 +43,29 @@ type AWS struct {
 type SQS struct {
 	InputQueue  string `env:"INPUT_QUEUE" envDefault:"wager-transactions.fifo"`
 	EventsQueue string `env:"EVENTS_QUEUE" envDefault:"wager-events.fifo"`
+	// DeadLetterQueue is where the consumer sends the messages it can never handle
+	// (the queue's own redrive sends the ones whose attempts ran out).
+	DeadLetterQueue string   `env:"DEAD_LETTER_QUEUE" envDefault:"wager-transactions-dlq.fifo"`
+	Consumer        Consumer `envPrefix:"CONSUMER_"`
+}
+
+// Consumer tunes the loop that reads the input queue.
+type Consumer struct {
+	// Workers is how many receive loops run in each instance.
+	Workers int `env:"WORKERS" envDefault:"4"`
+	// BatchSize is how many messages one receive asks for (SQS allows 1 to 10).
+	BatchSize int `env:"BATCH_SIZE" envDefault:"10"`
+	// PollWait is the long-poll wait of a receive; SQS allows up to 20s.
+	PollWait time.Duration `env:"POLL_WAIT" envDefault:"20s"`
+	// ProcessingTimeout bounds the handling of one message. It must be shorter than
+	// the queue's visibility timeout (30s), or the message could be handed to another
+	// instance while this one is still working on it.
+	ProcessingTimeout time.Duration `env:"PROCESSING_TIMEOUT" envDefault:"20s"`
+	// RetryBackoffBase is how long a message that failed for a transient reason stays
+	// invisible after its first failure; it doubles with each receive.
+	RetryBackoffBase time.Duration `env:"RETRY_BACKOFF_BASE" envDefault:"2s"`
+	// RetryBackoffMax is the longest that wait grows to.
+	RetryBackoffMax time.Duration `env:"RETRY_BACKOFF_MAX" envDefault:"60s"`
 }
 
 // Outbox tunes the publisher that sends committed events to the events queue.
@@ -103,7 +126,9 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("AWS_ENDPOINT_URL: %w", err))
 		}
 	}
-	for name, queue := range map[string]string{"SQS_INPUT_QUEUE": c.SQS.InputQueue, "SQS_EVENTS_QUEUE": c.SQS.EventsQueue} {
+	for name, queue := range map[string]string{
+		"SQS_INPUT_QUEUE": c.SQS.InputQueue, "SQS_EVENTS_QUEUE": c.SQS.EventsQueue, "SQS_DEAD_LETTER_QUEUE": c.SQS.DeadLetterQueue,
+	} {
 		if !strings.HasSuffix(queue, ".fifo") {
 			errs = append(errs, fmt.Errorf("%s must name a FIFO queue (suffix .fifo), got %q", name, queue))
 		}
@@ -126,6 +151,7 @@ func (c Config) Validate() error {
 	if c.Outbox.Lease < time.Second {
 		errs = append(errs, errors.New("OUTBOX_LEASE must be at least 1s"))
 	}
+	errs = append(errs, c.SQS.Consumer.validate()...)
 	for _, origin := range c.CORSAllowedOrigins {
 		if err := validateOrigin(origin); err != nil {
 			errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS: %q: %w", origin, err))
@@ -161,4 +187,34 @@ func validateOrigin(origin string) error {
 		return errors.New("must have no path, query, fragment or user info")
 	}
 	return nil
+}
+
+// maxReceiveBatch is the most messages SQS returns from one receive, and maxPollWait
+// the longest long poll it allows.
+const (
+	maxReceiveBatch = 10
+	maxPollWait     = 20 * time.Second
+)
+
+func (c Consumer) validate() []error {
+	var errs []error
+	if c.Workers < 1 {
+		errs = append(errs, errors.New("SQS_CONSUMER_WORKERS must be at least 1"))
+	}
+	if c.BatchSize < 1 || c.BatchSize > maxReceiveBatch {
+		errs = append(errs, fmt.Errorf("SQS_CONSUMER_BATCH_SIZE must be between 1 and %d (the SQS receive limit)", maxReceiveBatch))
+	}
+	if c.PollWait < 0 || c.PollWait > maxPollWait {
+		errs = append(errs, fmt.Errorf("SQS_CONSUMER_POLL_WAIT must be between 0 and %s (the SQS long poll limit)", maxPollWait))
+	}
+	if c.ProcessingTimeout <= 0 {
+		errs = append(errs, errors.New("SQS_CONSUMER_PROCESSING_TIMEOUT must be positive"))
+	}
+	if c.RetryBackoffBase < time.Second {
+		errs = append(errs, errors.New("SQS_CONSUMER_RETRY_BACKOFF_BASE must be at least 1s (SQS visibility has a resolution of seconds)"))
+	}
+	if c.RetryBackoffMax < c.RetryBackoffBase {
+		errs = append(errs, errors.New("SQS_CONSUMER_RETRY_BACKOFF_MAX must not be less than SQS_CONSUMER_RETRY_BACKOFF_BASE"))
+	}
+	return errs
 }

@@ -53,6 +53,7 @@ type memDB struct {
 	byID    map[uuid.UUID]wager.Transaction
 	entries []wallet.LedgerEntry
 	events  []event.Event
+	inbox   map[key]inboxRow
 
 	calls       []string
 	failAt      string // the call that fails with errInjected
@@ -66,7 +67,7 @@ var errInjected = errors.New("injected failure")
 
 func newDB() *memDB {
 	return &memDB{
-		wallets: map[uuid.UUID]wallet.Wallet{}, byKey: map[key]wager.Transaction{}, byExt: map[key]wager.Transaction{}, byID: map[uuid.UUID]wager.Transaction{},
+		inbox: map[key]inboxRow{}, wallets: map[uuid.UUID]wallet.Wallet{}, byKey: map[key]wager.Transaction{}, byExt: map[key]wager.Transaction{}, byID: map[uuid.UUID]wager.Transaction{},
 	}
 }
 
@@ -80,7 +81,13 @@ func (db *memDB) step(name string) error {
 	return nil
 }
 
+type inboxRow struct {
+	hash      string
+	completed bool
+}
+
 type snapshot struct {
+	inbox   map[key]inboxRow
 	wallets map[uuid.UUID]wallet.Wallet
 	byKey   map[key]wager.Transaction
 	byExt   map[key]wager.Transaction
@@ -90,11 +97,11 @@ type snapshot struct {
 }
 
 func (db *memDB) save() snapshot {
-	return snapshot{maps.Clone(db.wallets), maps.Clone(db.byKey), maps.Clone(db.byExt), maps.Clone(db.byID), slices.Clone(db.entries), slices.Clone(db.events)}
+	return snapshot{maps.Clone(db.inbox), maps.Clone(db.wallets), maps.Clone(db.byKey), maps.Clone(db.byExt), maps.Clone(db.byID), slices.Clone(db.entries), slices.Clone(db.events)}
 }
 
 func (db *memDB) restore(s snapshot) {
-	db.wallets, db.byKey, db.byExt, db.byID, db.entries, db.events = s.wallets, s.byKey, s.byExt, s.byID, s.entries, s.events
+	db.inbox, db.wallets, db.byKey, db.byExt, db.byID, db.entries, db.events = s.inbox, s.wallets, s.byKey, s.byExt, s.byID, s.entries, s.events
 }
 
 func (db *memDB) Do(ctx context.Context, fn func(context.Context, application.Repositories) error) error {
@@ -111,13 +118,44 @@ func (db *memDB) Wallets() application.WalletRepository           { return (*wal
 func (db *memDB) Transactions() application.TransactionRepository { return (*txRepo)(db) }
 func (db *memDB) Ledger() application.LedgerRepository            { return (*ledgerRepo)(db) }
 func (db *memDB) Outbox() application.OutboxRepository            { return (*outboxRepo)(db) }
+func (db *memDB) Inbox() application.InboxRepository              { return (*inboxRepo)(db) }
 
 type (
 	walletRepo (memDB)
 	txRepo     (memDB)
 	ledgerRepo (memDB)
 	outboxRepo (memDB)
+	inboxRepo  (memDB)
 )
+
+func (r *inboxRepo) Receive(_ context.Context, consumer, id, hash string, _ time.Time) (application.InboxStatus, error) {
+	db := (*memDB)(r)
+	if err := db.step("inbox-receive"); err != nil {
+		return "", err
+	}
+	if row, seen := db.inbox[key{consumer, id}]; seen {
+		if row.hash != hash {
+			return application.InboxContentConflict, nil
+		}
+		return application.InboxDuplicate, nil
+	}
+	db.inbox[key{consumer, id}] = inboxRow{hash: hash}
+	return application.InboxNew, nil
+}
+
+func (r *inboxRepo) Complete(_ context.Context, consumer, id string, _ time.Time) error {
+	db := (*memDB)(r)
+	if err := db.step("inbox-complete"); err != nil {
+		return err
+	}
+	row, seen := db.inbox[key{consumer, id}]
+	if !seen {
+		return errors.New("complete of a message that was not received")
+	}
+	row.completed = true
+	db.inbox[key{consumer, id}] = row
+	return nil
+}
 
 func (r *walletRepo) Insert(context.Context, wallet.Wallet) error { panic("not used") }
 
@@ -720,4 +758,123 @@ func TestTheStoredAnswerIsLookedUpBeforeAnyLockIsTaken(t *testing.T) {
 	_, err = f.uc.Execute(t.Context(), again)
 	require.Error(t, err)
 	require.NotContains(t, f.db.calls, "lock")
+}
+
+// --- a request that arrives in a queue message --------------------------------------
+
+func messageInput(amount int64, messageID string) processwager.Input {
+	in := betInput(amount)
+	in.Message = &processwager.Message{Consumer: "sqs-consumer", ID: messageID}
+	return in
+}
+
+func TestAMessageIsRecordedFirstAndCompletedLastInTheSameUnitOfWork(t *testing.T) {
+	f := newFixture(t, 10000)
+
+	out, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"inbox-receive", "find", "lock", "claim", "update", "ledger", "finish", "outbox", "outbox", "inbox-complete"}, f.db.calls,
+		"the inbox is taken before any wallet is, and completed with the last write")
+	require.Equal(t, 1, f.db.uowRuns)
+	require.False(t, out.MessageAlreadyHandled)
+	require.True(t, f.db.inbox[key{"sqs-consumer", "msg-1"}].completed)
+	require.Equal(t, int64(7500), f.balance())
+	require.Contains(t, f.logs.String(), `"messageId":"msg-1"`)
+}
+
+func TestAMessageDeliveredAgainDoesNothing(t *testing.T) {
+	f := newFixture(t, 10000)
+	_, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+	require.NoError(t, err)
+	f.db.calls = nil
+
+	out, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+	require.NoError(t, err)
+
+	require.True(t, out.MessageAlreadyHandled)
+	require.False(t, out.Transaction.IsValid())
+	require.Equal(t, []string{"inbox-receive"}, f.db.calls, "no look at the wallet, no lock")
+	require.Equal(t, int64(7500), f.balance(), "debited once")
+	require.Len(t, f.db.entries, 1)
+	require.Equal(t, []processwager.Outcome{processwager.OutcomeProcessed, processwager.OutcomeDuplicateMessage}, f.rec.outcomes())
+}
+
+func TestTheSameMessageIdWithOtherContentIsRefusedAndStoresNothing(t *testing.T) {
+	cases := map[string]func(in *processwager.Input){
+		"another amount":          func(in *processwager.Input) { in.Request.Amount = brl(9999) },
+		"another idempotency key": func(in *processwager.Input) { in.IdempotencyKey = "provider-a:other-key" },
+		"another external id":     func(in *processwager.Input) { in.Request.ExternalTransactionID = "transaction-999" },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, 10000)
+			_, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+			require.NoError(t, err)
+			entries, events := len(f.db.entries), len(f.db.events)
+
+			in := messageInput(2500, "msg-1")
+			change(&in)
+			_, err = f.uc.Execute(t.Context(), in)
+
+			require.ErrorIs(t, err, processwager.ErrMessageContentConflict)
+			require.Equal(t, processwager.OutcomeMessageConflict, f.rec.outcomes()[1])
+			require.Equal(t, int64(7500), f.balance())
+			require.Len(t, f.db.entries, entries)
+			require.Len(t, f.db.events, events)
+		})
+	}
+}
+
+func TestADifferentMessageForTheSameOperationIsAReplayNotASecondMovement(t *testing.T) {
+	f := newFixture(t, 10000)
+	first, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+	require.NoError(t, err)
+
+	second, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-2"))
+
+	require.NoError(t, err)
+	require.True(t, second.IdempotentReplay, "the idempotency key stops a second movement when the message id is new")
+	require.Equal(t, first.Transaction.ID(), second.Transaction.ID())
+	require.Equal(t, int64(7500), f.balance())
+	require.Len(t, f.db.entries, 1)
+	require.True(t, f.db.inbox[key{"sqs-consumer", "msg-2"}].completed, "and the new message is recorded as handled")
+}
+
+func TestARefusalThatWasStoredIsAHandledMessage(t *testing.T) {
+	f := newFixture(t, 1000)
+
+	out, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+
+	require.NoError(t, err)
+	require.Equal(t, wager.StatusRejected, out.Transaction.Status())
+	require.True(t, f.db.inbox[key{"sqs-consumer", "msg-1"}].completed, "a Rejection is final: the message is done")
+}
+
+func TestWhateverFailsRollsTheMessageBackToo(t *testing.T) {
+	for _, step := range []string{"find", "lock", "claim", "update", "ledger", "finish", "outbox", "inbox-complete"} {
+		t.Run(step, func(t *testing.T) {
+			f := newFixture(t, 10000)
+			f.db.failAt = step
+
+			_, err := f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+
+			require.Error(t, err)
+			require.Empty(t, f.db.inbox, "a message whose handling did not commit is not recorded, so its redelivery is handled")
+			require.Equal(t, int64(10000), f.balance())
+
+			f.db.failAt = ""
+			_, err = f.uc.Execute(t.Context(), messageInput(2500, "msg-1"))
+			require.NoError(t, err)
+			require.Equal(t, int64(7500), f.balance())
+		})
+	}
+}
+
+func TestARequestWithoutAMessageDoesNotTouchTheInbox(t *testing.T) {
+	f := newFixture(t, 10000)
+	_, err := f.uc.Execute(t.Context(), betInput(2500))
+	require.NoError(t, err)
+	require.Empty(t, f.db.inbox)
+	require.NotContains(t, f.db.calls, "inbox-receive")
 }

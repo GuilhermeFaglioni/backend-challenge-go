@@ -279,11 +279,20 @@ var startupPoints = map[faultinject.Point]bool{
 	faultinject.HTTPAfterListen:  true,
 }
 
+// messagePoints are reached by handling a queue message.
+var messagePoints = map[faultinject.Point]bool{
+	faultinject.ConsumerAfterCommit: true,
+}
+
 // One subtest per point: each fails if that point's Hit call is removed from the
 // code, so every point is proven to be wired, not just one of them.
 func TestFaultPointCrashesTheProcessAtThatPoint(t *testing.T) {
 	for _, point := range faultinject.Points() {
 		t.Run(string(point), func(t *testing.T) {
+			if messagePoints[point] {
+				crashesWhenAMessageArrives(t, point)
+				return
+			}
 			if !startupPoints[point] {
 				crashesWhenItsWorkArrives(t, point)
 				return

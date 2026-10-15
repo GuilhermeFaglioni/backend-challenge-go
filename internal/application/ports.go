@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -34,6 +35,7 @@ type Repositories interface {
 	Transactions() TransactionRepository
 	Ledger() LedgerRepository
 	Outbox() OutboxRepository
+	Inbox() InboxRepository
 }
 
 type WalletRepository interface {
@@ -76,6 +78,31 @@ type OutboxRepository interface {
 	// Add stores the event to be published, in the same database transaction as
 	// the change that caused it.
 	Add(ctx context.Context, e event.Event) error
+}
+
+// InboxStatus says what Receive found.
+type InboxStatus string
+
+const (
+	// InboxNew: the message was not known; it is now recorded as received.
+	InboxNew InboxStatus = "new"
+	// InboxDuplicate: the message was handled before, with the same content.
+	InboxDuplicate InboxStatus = "duplicate"
+	// InboxContentConflict: a message with this id was handled before, with other
+	// content.
+	InboxContentConflict InboxStatus = "content_conflict"
+)
+
+// InboxRepository records which messages a consumer has handled. A row is written with
+// the changes the message caused and commits with them, so a row visible to another
+// transaction always means "handled".
+type InboxRepository interface {
+	// Receive records the message as received unless the consumer already has a
+	// message with this id. Two copies handled at once wait for each other here: the
+	// second sees the outcome of the first.
+	Receive(ctx context.Context, consumer, messageID, payloadHash string, at time.Time) (InboxStatus, error)
+	// Complete marks the message received in this transaction as completed.
+	Complete(ctx context.Context, consumer, messageID string, at time.Time) error
 }
 
 // WalletReader reads wallets outside any unit of work: a single consistent read.

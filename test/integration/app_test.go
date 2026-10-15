@@ -96,7 +96,10 @@ func appConfig(t *testing.T, db infra.Database, sqsEndpoint string) config.Confi
 		ShutdownTimeout: 20 * time.Second,
 		Database:        config.Database{URL: db.AppDSN, MaxConns: 4},
 		AWS:             config.AWS{Region: "us-east-1", EndpointURL: sqsEndpoint},
-		SQS:             config.SQS{InputQueue: "wager-transactions.fifo", EventsQueue: "wager-events.fifo"},
+		SQS: config.SQS{
+			InputQueue: "wager-transactions.fifo", EventsQueue: "wager-events.fifo", DeadLetterQueue: "wager-transactions-dlq.fifo",
+			Consumer: config.Consumer{Workers: 2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 10 * time.Second, RetryBackoffBase: time.Second, RetryBackoffMax: 4 * time.Second},
+		},
 		OIDC: config.OIDC{
 			IssuerURL:    kc.IssuerURL(),
 			DiscoveryURL: kc.IssuerURL(),

@@ -15,6 +15,8 @@ package processwager
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +41,9 @@ var (
 	// ErrDuplicateExternalTransaction: the provider's external transaction id was
 	// already used under another idempotency key. The operation is not applied again.
 	ErrDuplicateExternalTransaction = errors.New("processwager: the external transaction id was already used with another idempotency key")
+	// ErrMessageContentConflict: the inbox already holds a message with this id and
+	// other content. Nothing was stored.
+	ErrMessageContentConflict = errors.New("processwager: the message id was already used for a message with different content")
 )
 
 // Outcome is how a request ended, for metrics and logs.
@@ -50,6 +55,8 @@ const (
 	OutcomeReplayed          Outcome = "replayed"
 	OutcomeKeyConflict       Outcome = "key_conflict"
 	OutcomeDuplicateExternal Outcome = "duplicate_external"
+	OutcomeDuplicateMessage  Outcome = "duplicate_message" // a message delivered again: handled before, nothing done
+	OutcomeMessageConflict   Outcome = "message_conflict"
 	OutcomeInvalid           Outcome = "invalid"
 	OutcomeUnsupported       Outcome = "unsupported"
 	OutcomeUnavailable       Outcome = "unavailable" // a Transient error: nothing was stored, try again
@@ -59,7 +66,7 @@ const (
 // Outcomes lists every Outcome, so a metric can start each at zero.
 var Outcomes = []Outcome{
 	OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeKeyConflict, OutcomeDuplicateExternal,
-	OutcomeInvalid, OutcomeUnsupported, OutcomeUnavailable, OutcomeError,
+	OutcomeDuplicateMessage, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnsupported, OutcomeUnavailable, OutcomeError,
 }
 
 // Recorder measures the requests: one call per Execute.
@@ -67,19 +74,30 @@ type Recorder interface {
 	Handled(kind wager.Kind, outcome Outcome, took time.Duration)
 }
 
+// Message identifies the queue message a request arrived in. The use case records it
+// in the inbox in the same database transaction as everything the request changes.
+type Message struct {
+	Consumer string // which consumer handled it; the inbox is per consumer
+	ID       string // the message id of the envelope
+}
+
 // Input is a request to process, as the adapters decode it from HTTP or SQS.
 type Input struct {
 	Request        wager.RequestParams
 	IdempotencyKey string // as received
 	CorrelationID  string
-	CausationID    string // the message or request that caused this; optional
+	CausationID    string   // the message or request that caused this; optional
+	Message        *Message // set when the request came in a queue message
 }
 
 // Output is the stored transaction and whether it is a replay of an earlier request.
-// The transaction is PROCESSED or REJECTED, with its result or its failure code.
+// The transaction is PROCESSED or REJECTED, with its result or its failure code. When
+// the request came in a message that was handled before (MessageAlreadyHandled) nothing
+// was done and the transaction is the zero value.
 type Output struct {
-	Transaction      wager.Transaction
-	IdempotentReplay bool
+	Transaction           wager.Transaction
+	IdempotentReplay      bool
+	MessageAlreadyHandled bool
 }
 
 // Deps are what the use case needs from the outside.
@@ -134,14 +152,49 @@ func (u *UseCase) execute(ctx context.Context, in Input) (Output, Outcome, error
 	var out Output
 	var outcome Outcome
 	err = u.deps.UnitOfWork.Do(ctx, func(ctx context.Context, repos application.Repositories) error {
-		var err error
-		out, outcome, err = u.process(ctx, repos, in, pending)
-		return err
+		return u.handle(ctx, repos, in, pending, &out, &outcome)
 	})
 	if err != nil {
 		return Output{}, errorOutcome(err), err
 	}
 	return out, outcome, nil
+}
+
+// handle is one attempt for a request that may have come in a message: the message is
+// recorded first (so two copies of it, handled at once, wait for each other before they
+// touch any wallet) and completed last, with the same commit as everything in between.
+func (u *UseCase) handle(ctx context.Context, repos application.Repositories, in Input, pending wager.Transaction, out *Output, outcome *Outcome) error {
+	if in.Message != nil {
+		status, err := repos.Inbox().Receive(ctx, in.Message.Consumer, in.Message.ID, messageHash(pending), u.deps.Now())
+		if err != nil {
+			return err
+		}
+		switch status {
+		case application.InboxDuplicate:
+			*out, *outcome = Output{MessageAlreadyHandled: true}, OutcomeDuplicateMessage
+			return nil
+		case application.InboxContentConflict:
+			return ErrMessageContentConflict
+		}
+	}
+	var err error
+	*out, *outcome, err = u.process(ctx, repos, in, pending)
+	if err != nil {
+		return err
+	}
+	if in.Message != nil {
+		return repos.Inbox().Complete(ctx, in.Message.Consumer, in.Message.ID, u.deps.Now())
+	}
+	return nil
+}
+
+// messageHash is what the inbox compares on a message id it has seen: the business
+// content of the request and the idempotency key it came with. Transport details (the
+// time it was sent, attributes) are not part of what a message says.
+func messageHash(pending wager.Transaction) string {
+	external := pending.External()
+	sum := sha256.Sum256([]byte(string(external.PayloadHash) + "\n" + external.IdempotencyKey))
+	return hex.EncodeToString(sum[:])
 }
 
 // process is one attempt, inside a unit of work. The order is the one of ADR 0002 and
@@ -317,6 +370,8 @@ func errorOutcome(err error) Outcome {
 		return OutcomeKeyConflict
 	case errors.Is(err, ErrDuplicateExternalTransaction):
 		return OutcomeDuplicateExternal
+	case errors.Is(err, ErrMessageContentConflict):
+		return OutcomeMessageConflict
 	case errors.Is(err, application.ErrTemporarilyUnavailable):
 		return OutcomeUnavailable
 	}
@@ -333,6 +388,9 @@ func (u *UseCase) log(ctx context.Context, in Input, out Output, outcome Outcome
 		slog.String("walletId", in.Request.WalletID.String()),
 		slog.String("outcome", string(outcome)),
 	}
+	if in.Message != nil {
+		attrs = append(attrs, slog.String("messageId", in.Message.ID))
+	}
 	if out.Transaction.IsValid() {
 		attrs = append(attrs,
 			slog.String("transactionId", out.Transaction.ID().String()),
@@ -344,9 +402,9 @@ func (u *UseCase) log(ctx context.Context, in Input, out Output, outcome Outcome
 		}
 	}
 	switch outcome {
-	case OutcomeProcessed, OutcomeRejected, OutcomeReplayed:
+	case OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeDuplicateMessage:
 		u.deps.Logger.InfoContext(ctx, "wager request handled", attrs...)
-	case OutcomeKeyConflict, OutcomeDuplicateExternal, OutcomeInvalid, OutcomeUnsupported:
+	case OutcomeKeyConflict, OutcomeDuplicateExternal, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnsupported:
 		u.deps.Logger.WarnContext(ctx, "wager request refused", append(attrs, slog.String("reason", outcomeReason(err)))...)
 	case OutcomeUnavailable:
 		u.deps.Logger.WarnContext(ctx, "wager request not processed: a dependency is unavailable", append(attrs, slog.Any("error", err))...)
@@ -362,6 +420,8 @@ func outcomeReason(err error) string {
 		return "idempotency key conflict"
 	case errors.Is(err, ErrDuplicateExternalTransaction):
 		return "duplicate external transaction"
+	case errors.Is(err, ErrMessageContentConflict):
+		return "message content conflict"
 	case errors.Is(err, ErrUnsupportedKind):
 		return "unsupported kind"
 	case errors.Is(err, ErrInvalidInput):

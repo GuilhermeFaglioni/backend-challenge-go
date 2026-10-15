@@ -29,6 +29,7 @@ func (r *repositories) Transactions() application.TransactionRepository {
 }
 func (r *repositories) Ledger() application.LedgerRepository { return ledgerRepository{r.tx} }
 func (r *repositories) Outbox() application.OutboxRepository { return outboxRepository{r.tx} }
+func (r *repositories) Inbox() application.InboxRepository   { return inboxRepository{r.tx} }
 
 // --- wallets -----------------------------------------------------------------------
 
@@ -383,6 +384,47 @@ func (r transactionRepository) Finish(ctx context.Context, t wager.Transaction) 
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("finish wager transaction %s: it was not claimed in this unit of work", t.ID())
+	}
+	return nil
+}
+
+// --- inbox -------------------------------------------------------------------------
+
+type inboxRepository struct{ tx pgx.Tx }
+
+// Receive inserts the message, or finds out what is already recorded for its id. It is
+// two statements on purpose: when another transaction is inserting the same id, the
+// INSERT waits for it and then inserts nothing, and only a statement that starts after
+// that sees the row the other transaction committed.
+func (r inboxRepository) Receive(ctx context.Context, consumer, messageID, payloadHash string, at time.Time) (application.InboxStatus, error) {
+	tag, err := r.tx.Exec(ctx, `
+		INSERT INTO inbox (consumer_name, message_id, payload_hash, received_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (consumer_name, message_id) DO NOTHING`, consumer, messageID, payloadHash, at)
+	if err != nil {
+		return "", fmt.Errorf("record message %s: %w", messageID, err)
+	}
+	if tag.RowsAffected() == 1 {
+		return application.InboxNew, nil
+	}
+	var recorded string
+	err = r.tx.QueryRow(ctx, `SELECT payload_hash FROM inbox WHERE consumer_name = $1 AND message_id = $2`, consumer, messageID).Scan(&recorded)
+	if err != nil {
+		return "", fmt.Errorf("read message %s: %w", messageID, err)
+	}
+	if recorded != payloadHash {
+		return application.InboxContentConflict, nil
+	}
+	return application.InboxDuplicate, nil
+}
+
+func (r inboxRepository) Complete(ctx context.Context, consumer, messageID string, at time.Time) error {
+	tag, err := r.tx.Exec(ctx, `UPDATE inbox SET completed_at = $3 WHERE consumer_name = $1 AND message_id = $2 AND completed_at IS NULL`, consumer, messageID, at)
+	if err != nil {
+		return fmt.Errorf("complete message %s: %w", messageID, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("complete message %s: it is not recorded as received in this transaction", messageID)
 	}
 	return nil
 }
