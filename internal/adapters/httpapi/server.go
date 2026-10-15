@@ -1,10 +1,10 @@
-// Package httpapi is the HTTP adapter: routing, handlers and the server
-// lifecycle. Business endpoints are added as the use cases land.
+// Package httpapi is the HTTP adapter: routing, authentication, handlers and the
+// server lifecycle. Business endpoints are added as the use cases land, always
+// through Routes (routes.go).
 package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -12,16 +12,20 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/fx"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
 
 var Module = fx.Module("httpapi",
-	fx.Provide(NewServer),
+	fx.Provide(
+		NewServer,
+		// The server asks for an Authenticator; the verifier is what satisfies it.
+		func(v *auth.Verifier) Authenticator { return v },
+	),
 	fx.Invoke(func(*http.Server) {}),
 )
 
@@ -34,12 +38,16 @@ type ServerParams struct {
 	Logger     *slog.Logger
 	Health     *health.Registry
 	Metrics    *prometheus.Registry
+	Authn      Authenticator
 }
 
 func NewServer(p ServerParams) *http.Server {
+	routes := NewRoutes(p.Authn, p.Logger, p.Metrics)
+	registerRoutes(routes, p.Health, p.Metrics)
+
 	srv := &http.Server{
 		Addr:              p.Config.HTTPAddr,
-		Handler:           newMux(p.Health, p.Metrics),
+		Handler:           routes.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -75,27 +83,4 @@ func NewServer(p ServerParams) *http.Server {
 		},
 	})
 	return srv
-}
-
-func newMux(hr *health.Registry, reg *prometheus.Registry) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
-		report, ok := hr.Ready(r.Context())
-		status := http.StatusOK
-		if !ok {
-			status = http.StatusServiceUnavailable
-		}
-		writeJSON(w, status, report)
-	})
-	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
-	return mux
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
 }

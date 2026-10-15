@@ -15,9 +15,12 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
 
-func newTestMux(checks ...health.Check) *http.ServeMux {
+func newTestMux(checks ...health.Check) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newMux(health.NewRegistry(health.Params{Logger: logger, Checks: checks}), prometheus.NewRegistry())
+	metrics := prometheus.NewRegistry()
+	routes := NewRoutes(fakeAuthenticator{}, logger, metrics)
+	registerRoutes(routes, health.NewRegistry(health.Params{Logger: logger, Checks: checks}), metrics)
+	return routes.Handler()
 }
 
 func TestLive(t *testing.T) {

@@ -91,6 +91,16 @@ for port in $INSTANCE_PORTS; do
   ok "instance on :${port} ready (postgres and sqs ok)"
 done
 
+# Each instance validates tokens locally, and cannot start without having found the
+# identity provider's keys. Inside the compose network it reaches Keycloak by its
+# service name, while tokens carry the host-facing issuer: an instance that logged
+# this line got through that split.
+for service in $(docker compose ps --services | grep '^app-'); do
+  docker compose logs --no-color "$service" 2>/dev/null | grep -q '"msg":"identity provider ready"' \
+    || fail "${service} never reported the identity provider as ready"
+  ok "${service} discovered the identity provider (issuer/discovery split)"
+done
+
 # --- keycloak token ---------------------------------------------------------
 
 wait_for "keycloak realm" curl -fsS "${REALM_URL}/.well-known/openid-configuration"
