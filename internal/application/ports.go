@@ -188,22 +188,54 @@ type LedgerReader interface {
 }
 
 // LedgerAudit is what a wallet's books look like at one instant: the balance it stores
-// and the sums of its ledger. Credits and debits are kept apart so that neither can
-// overflow what a single signed sum could.
+// and the sums of the ledger entries the audit read. Credits and debits are kept apart
+// so that neither can overflow what a single signed sum could.
+//
+// An incremental audit reads only the entries after the wallet's last checkpoint (Base);
+// a full one reads them all, and also reports the last checkpoint (Latest) with what the
+// ledger adds up to through its seq (Prefix), so the checkpoint can be checked.
 type LedgerAudit struct {
 	Currency money.Currency
 	Stored   int64 // balance_minor
 	Credits  *big.Int
 	Debits   *big.Int
 	Entries  int64
+	// LastSeq is the seq of the wallet's last entry in the snapshot; 0 when it has none.
+	LastSeq int64
+	// Base is the checkpoint the entries read continue from; nil when they were read from
+	// the beginning.
+	Base *LedgerCheckpoint
+	// Latest and Prefix are set by a full audit when the wallet has a checkpoint.
+	Latest *LedgerCheckpoint
+	Prefix *LedgerSums
+}
+
+// LedgerSums is what a run of a wallet's ledger entries adds up to.
+type LedgerSums struct {
+	Credits *big.Int
+	Debits  *big.Int
+	Entries int64
+}
+
+// LedgerCheckpoint is what a wallet's ledger adds up to through one seq, recorded after a
+// reconciliation found the books consistent.
+type LedgerCheckpoint struct {
+	ThroughSeq int64
+	LedgerSums
 }
 
 // LedgerAuditor reads a wallet's books for reconciliation.
 type LedgerAuditor interface {
 	// Audit reads the stored balance and the ledger in ONE consistent snapshot, read
 	// only, so that writes going on at the same time cannot make them disagree. It
-	// changes nothing. ErrWalletNotFound if there is no such wallet.
-	Audit(ctx context.Context, walletID uuid.UUID) (LedgerAudit, error)
+	// changes nothing. full reads every entry instead of continuing from the last
+	// checkpoint. ErrWalletNotFound if there is no such wallet.
+	Audit(ctx context.Context, walletID uuid.UUID, full bool) (LedgerAudit, error)
+	// RecordCheckpoint records what the wallet's ledger adds up to through the entry at
+	// throughSeq. The store computes the sums itself, from the ledger, and refuses to
+	// record them if they do not add up to the balance that entry ends at; false when a
+	// checkpoint at or beyond that seq is already there.
+	RecordCheckpoint(ctx context.Context, walletID uuid.UUID, throughSeq int64) (bool, error)
 }
 
 // ErrWalletNotFound: there is no wallet with that id.

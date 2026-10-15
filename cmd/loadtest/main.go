@@ -332,7 +332,7 @@ func reconcileAll(ctx context.Context, client *http.Client, target, internal str
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			data, status, err := do(ctx, client, http.MethodPost, target+"/wallets/"+w.id+"/reconciliation", internal, "", nil)
+			data, status, err := do(ctx, client, http.MethodPost, target+"/wallets/"+w.id+"/reconciliation?full=true", internal, "", nil)
 			var result struct {
 				Consistent bool `json:"consistent"`
 			}

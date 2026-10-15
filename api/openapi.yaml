@@ -428,7 +428,15 @@ paths:
         Role `internal`. Rebuilds the balance from the ledger (credits minus debits, the
         opening credit included) and compares it with the balance the wallet stores. The
         two are read in one consistent snapshot, so writes going on at the same time cannot
-        make them disagree. Nothing is changed.
+        make them disagree. The wallet and its ledger are never changed.
+
+        By default the check is incremental: it continues from the wallet's last
+        checkpoint and reads only the entries recorded after it, so its cost follows what
+        happened since the last check, not the size of the ledger. A check that finds the
+        books consistent records a new checkpoint through the last entry. Checkpoints are
+        computed by the database from the ledger itself, never by the caller. `full=true`
+        reads the whole ledger instead and also checks the last checkpoint against it
+        (`checkpointMatches`); a checkpoint that does not match makes the books inconsistent.
 
         The answer is `200` also when the books do not agree: a divergence is what the
         check found, not a problem with the request. It is reported in `consistent: false`
@@ -438,6 +446,11 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: full
+          in: query
+          required: false
+          description: '`true` reads the whole ledger and checks the last checkpoint. Only `true` or `false`, once.'
+          schema: { type: boolean, default: false }
         - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
@@ -767,7 +780,7 @@ components:
         `calculatedBalance` is the credits minus the debits of the ledger, the opening
         included. `difference` is the stored balance minus the calculated one: zero when
         the books agree, negative when the ledger explains more than is stored.
-      required: [walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries]
+      required: [walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries, mode, readEntries]
       properties:
         walletId: { type: string, format: uuid }
         storedBalance:
@@ -782,7 +795,18 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: How many ledger entries were added up.
+          description: How many ledger entries the calculated balance accounts for, those of the checkpoint included.
+        mode:
+          type: string
+          enum: [incremental, full]
+        readEntries:
+          type: integer
+          format: int64
+          minimum: 0
+          description: How many ledger entries this check read. Fewer than `checkedEntries` when it continued from a checkpoint.
+        checkpointMatches:
+          type: boolean
+          description: Full checks of a wallet that has a checkpoint only. Whether the last checkpoint agrees with the ledger it summarises.
 
     LedgerEntry:
       type: object

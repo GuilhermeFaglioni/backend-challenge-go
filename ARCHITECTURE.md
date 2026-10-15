@@ -401,13 +401,23 @@ O endpoint não recebe chave de idempotência. Um reenvio depois de um timeout r
 
 `POST /wallets/:walletId/reconciliation`, restrito ao papel `internal`:
 
-1. Abre uma transação `REPEATABLE READ READ ONLY`, de modo que saldo e ledger são lidos do mesmo snapshot.
-2. Lê `balance_minor` da carteira (`storedBalance`).
-3. Soma o ledger da carteira: créditos menos débitos, incluindo o lançamento da abertura (`calculatedBalance`), e conta os lançamentos (`checkedEntries`).
+1. Abre uma transação `REPEATABLE READ READ ONLY`, de modo que saldo, checkpoint e ledger são lidos do mesmo snapshot.
+2. Lê `balance_minor` da carteira (`storedBalance`) e o último checkpoint da carteira, se houver.
+3. Soma os lançamentos do ledger **posteriores ao checkpoint** (todos, se não houver): créditos menos débitos, mais as somas do checkpoint, incluindo o lançamento da abertura (`calculatedBalance`). `checkedEntries` conta os lançamentos que o saldo calculado cobre; `readEntries`, os que esta verificação leu.
 4. `difference = storedBalance − calculatedBalance` e `consistent = (difference == 0)`.
 5. Se houver divergência: log de nível `ERROR` com `walletId` e a diferença, e incremento da métrica `reconciliation_divergences_total`.
+6. Se os livros estiverem coerentes e houver lançamentos depois do checkpoint, grava um checkpoint novo até o último deles.
 
-A reconciliação nunca altera o saldo nem o ledger. Ela responde `200` mesmo quando há divergência, já que a divergência é um resultado da verificação, não um erro da requisição.
+Com `?full=true` (`mode: full`), o passo 3 lê o ledger inteiro, ignorando o checkpoint para o saldo, e confere o último checkpoint contra a soma do ledger até o `seq` dele (`checkpointMatches`). Um checkpoint que não confere torna os livros incoerentes, mesmo que o saldo bata, e vira um log `ERROR` próprio.
+
+**Checkpoints (migração 000014):** a tabela `reconciliation_checkpoints` guarda, por carteira e por `seq`, as somas de créditos, de débitos e a contagem de lançamentos até aquele `seq`. O custo de uma reconciliação passa a acompanhar o que aconteceu desde a anterior, não o tamanho do ledger. A confiança no checkpoint vem de como ele é feito:
+
+- O papel da aplicação só lê a tabela. A única forma de escrever é a função `record_reconciliation_checkpoint`, `SECURITY DEFINER`, que **calcula as somas ela mesma**, a partir do ledger, continuando do checkpoint anterior. Ela também se recusa a gravar se a soma não fechar com o `balance_after_minor` do lançamento naquele `seq`, ou se o `seq` não for um lançamento da carteira. A aplicação não consegue gravar um checkpoint inventado.
+- A tabela é append-only (gatilho contra `UPDATE`/`DELETE`/`TRUNCATE`, como o ledger).
+- O ledger é append-only, e numa carteira um lançamento posterior sempre tem `seq` maior e é confirmado depois (seção 6, migração 000007). Os lançamentos até um `seq` registrado não mudam mais, e um snapshot que viu até um `seq` nunca vê aparecer um anterior.
+- O que o checkpoint não protege: quem tem o papel de dono do schema pode desligar os gatilhos e alterar o ledger antigo ou o próprio checkpoint. A verificação incremental confia no checkpoint e não perceberia uma alteração do ledger anterior a ele; a verificação completa percebe as duas coisas, e é a que deve rodar periodicamente como auditoria.
+
+A reconciliação nunca altera o saldo nem o ledger; o único efeito é o checkpoint, escrito numa transação separada, depois da leitura. Uma falha ao gravá-lo não muda o resultado (a próxima verificação só lê mais). Ela responde `200` mesmo quando há divergência, já que a divergência é um resultado da verificação, não um erro da requisição.
 
 **No código (`internal/application/reconcile`, `internal/adapters/postgres/ledger_auditor.go`):** o auditor abre a transação `REPEATABLE READ READ ONLY` e, antes de ler qualquer coisa, confere com `current_setting` que ela é mesmo isso (um pooler ou um padrão de sessão poderia enfraquecê-la em silêncio); recusar é melhor que auditar com outro isolamento. Os créditos e débitos são somados como `numeric` e mantidos em `big.Int` até serem conferidos contra o intervalo de um `int64`: um ledger que soma mais do que um saldo comporta é um erro (`ErrBooksOutOfRange`), nunca um valor que dá a volta. A `difference` é sempre `guardado − calculado`, então é negativa quando o ledger explica mais do que está guardado. O log `ERROR` carrega `walletId`, `difference`, moeda e `checkedEntries`; as métricas são `reconciliations_total{result}` (`consistent`, `divergent`) e `reconciliation_divergences_total`.
 
@@ -769,7 +779,7 @@ Limitações conhecidas:
 
 - Escala fixa de duas casas (sem moedas de outra escala).
 - **Retenção:** um worker por instância (`internal/adapters/retention`) chama, a cada `RETENTION_INTERVAL` (1h), as funções de retenção do banco, em lotes de `RETENTION_BATCH_SIZE` (10.000) e no máximo 100 lotes por rodada: mensagens concluídas da inbox com mais de `RETENTION_INBOX` (14 dias; piso de 7) e eventos publicados da outbox com mais de `RETENTION_OUTBOX` (7 dias; piso de 1). O papel da aplicação não apaga nada dessas tabelas diretamente: só pelas funções, que recusam abaixo dos pisos. Várias instâncias rodando ao mesmo tempo só repartem o trabalho. Métricas `retention_pruned_total{table}` e `retention_errors_total`. Os eventos apagados deixam de existir para auditoria; quem precisar do histórico guarda o que consome da fila de eventos.
-- A reconciliação soma o ledger inteiro da carteira (leitura em um snapshot): o custo cresce com o número de lançamentos; não há saldo incremental nem checkpoint.
+- A reconciliação incremental continua do último checkpoint e confia nele: uma alteração do ledger anterior ao checkpoint (só possível ao dono do schema, desligando gatilhos) só é vista pela verificação completa (`?full=true`), que lê o ledger inteiro e cujo custo continua crescendo com o número de lançamentos. Os checkpoints não têm retenção: uma linha por verificação coerente que encontrou lançamentos novos.
 - O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms quando não há nada a fazer); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
 - **Vazão da outbox por carteira:** para garantir a ordem, o evento seguinte de uma carteira só é enviado depois de o anterior ser aceito, então uma carteira é publicada a cerca de 150 eventos/s (medido; o limite é a latência de uma chamada ao SQS). Uma carteira que gere eventos mais rápido do que isso (cada operação gera dois, então acima de ~75 operações/s numa só carteira) acumula fila e atraso enquanto durar a carga; nada se perde e a ordem se mantém (ver [docs/LOAD_TEST.md](docs/LOAD_TEST.md)).
 - Cada tentativa do worker é uma transação por operação; um lote grande de esperas na mesma carteira é resolvido em série (o lock da carteira serializa de qualquer modo).

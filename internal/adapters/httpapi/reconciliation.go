@@ -16,7 +16,7 @@ import (
 
 // Reconciler checks a wallet's books (the reconcile use case).
 type Reconciler interface {
-	Execute(ctx context.Context, walletID uuid.UUID) (reconcile.Result, error)
+	Execute(ctx context.Context, walletID uuid.UUID, mode reconcile.Mode) (reconcile.Result, error)
 }
 
 // Reconciliation serves the check of a wallet's books, for the internal service.
@@ -41,6 +41,9 @@ type reconciliationResponse struct {
 	Difference        money.Money `json:"difference"`
 	Consistent        bool        `json:"consistent"`
 	CheckedEntries    int64       `json:"checkedEntries"`
+	Mode              string      `json:"mode"`
+	ReadEntries       int64       `json:"readEntries"`
+	CheckpointMatches *bool       `json:"checkpointMatches,omitempty"` // full checks of a wallet with a checkpoint only
 }
 
 // reconcile answers 200 even when the books do not agree: a divergence is what the check
@@ -52,13 +55,28 @@ func (h *Reconciliation) reconcile(w http.ResponseWriter, req *http.Request) {
 		writeInvalid(w, []fieldIssue{{Field: "walletId", Issue: err.Error()}})
 		return
 	}
-	result, err := h.reconciler.Execute(req.Context(), id)
+	mode := reconcile.Incremental
+	switch full := req.URL.Query()["full"]; {
+	case len(full) == 0 || (len(full) == 1 && full[0] == "false"):
+	case len(full) == 1 && full[0] == "true":
+		mode = reconcile.Full
+	default:
+		writeInvalid(w, []fieldIssue{{Field: "full", Issue: "must be true or false, given once"}})
+		return
+	}
+	result, err := h.reconciler.Execute(req.Context(), id, mode)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, reconciliationResponse{
+		body := reconciliationResponse{
 			WalletID: result.WalletID, StoredBalance: result.Stored, CalculatedBalance: result.Calculated,
 			Difference: result.Difference, Consistent: result.Consistent, CheckedEntries: result.CheckedEntries,
-		})
+			Mode: result.Mode.String(), ReadEntries: result.ReadEntries,
+		}
+		if result.CheckpointChecked {
+			matches := !result.CheckpointMismatch
+			body.CheckpointMatches = &matches
+		}
+		writeJSON(w, http.StatusOK, body)
 	case errors.Is(err, application.ErrWalletNotFound):
 		writeError(w, http.StatusNotFound, CodeNotFound, "there is no wallet with that id")
 	case errors.Is(err, application.ErrTemporarilyUnavailable):
