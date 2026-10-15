@@ -211,12 +211,29 @@ func StartLocalStack(ctx context.Context) (*LocalStack, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        localstackImage,
 		ExposedPorts: []string{"4566/tcp"},
-		Env:          map[string]string{"SERVICES": "sqs", "AWS_DEFAULT_REGION": "us-east-1"},
-		Files: []testcontainers.ContainerFile{{
-			HostFilePath:      filepath.Join(RepoRoot(), "deploy", "localstack", "init", "01-sqs.sh"),
-			ContainerFilePath: "/etc/localstack/init/ready.d/01-sqs.sh",
-			FileMode:          0o755,
-		}},
+		Env:          map[string]string{"SERVICES": "sqs,iam", "AWS_DEFAULT_REGION": "us-east-1"},
+		Files: []testcontainers.ContainerFile{
+			{
+				HostFilePath:      filepath.Join(RepoRoot(), "deploy", "localstack", "init", "01-sqs.sh"),
+				ContainerFilePath: "/etc/localstack/init/ready.d/01-sqs.sh",
+				FileMode:          0o755,
+			},
+			{
+				HostFilePath:      filepath.Join(RepoRoot(), "deploy", "localstack", "init", "02-iam.sh"),
+				ContainerFilePath: "/etc/localstack/init/ready.d/02-iam.sh",
+				FileMode:          0o755,
+			},
+			{
+				HostFilePath:      filepath.Join(RepoRoot(), "deploy", "aws", "iam", "consumer-policy.json"),
+				ContainerFilePath: "/etc/wagering/iam/consumer-policy.json",
+				FileMode:          0o644,
+			},
+			{
+				HostFilePath:      filepath.Join(RepoRoot(), "deploy", "aws", "iam", "publisher-policy.json"),
+				ContainerFilePath: "/etc/wagering/iam/publisher-policy.json",
+				FileMode:          0o644,
+			},
+		},
 		WaitingFor: wait.ForHTTP("/_localstack/init/ready").
 			WithPort("4566/tcp").
 			WithResponseMatcher(func(body io.Reader) bool {

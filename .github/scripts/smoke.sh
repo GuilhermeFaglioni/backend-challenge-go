@@ -171,6 +171,14 @@ for queue in wager-transactions.fifo wager-transactions-dlq.fifo wager-events.fi
   ok "queue ${queue} exists"
 done
 
+# One IAM user per component, each with its least-privilege policy (deploy/aws/iam).
+for component in consumer publisher; do
+  attached=$(docker compose exec -T localstack awslocal iam list-attached-user-policies --user-name "wagering-${component}" \
+    --query 'AttachedPolicies[].PolicyName' --output text 2>/dev/null) || fail "IAM user wagering-${component} does not exist"
+  [ "$attached" = "wagering-${component}-sqs" ] || fail "wagering-${component} has policies '${attached}', not wagering-${component}-sqs"
+done
+ok "the consumer and the publisher each have an IAM user with their own SQS policy"
+
 redrive=$(awslocal_sqs get-queue-attributes \
   --queue-url "$(queue_url wager-transactions.fifo)" \
   --attribute-names RedrivePolicy --query Attributes.RedrivePolicy --output text) \

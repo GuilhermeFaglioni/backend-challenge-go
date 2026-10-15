@@ -179,6 +179,7 @@ Todas estão em [.env.example](.env.example). A aplicação valida a configuraç
 | `OIDC_DISCOVERY_URL` | não | Onde buscar metadados e JWKS; padrão é o issuer |
 | `OIDC_AUDIENCE` | não | `aud` esperado (padrão `wallet-api`) |
 | `SQS_INPUT_QUEUE`, `SQS_EVENTS_QUEUE` | não | Filas FIFO de entrada e de eventos |
+| `SQS_CONSUMER_ACCESS_KEY_ID`, `SQS_CONSUMER_SECRET_ACCESS_KEY`, `SQS_PUBLISHER_ACCESS_KEY_ID`, `SQS_PUBLISHER_SECRET_ACCESS_KEY` | não | Uma credencial por componente (cada uma para a política de [deploy/aws/iam](deploy/aws/iam)); as duas partes de cada uma vão juntas. Vazias, o componente usa a cadeia padrão do SDK (variáveis `AWS_*`, perfil ou o papel da máquina) |
 | `SQS_DEAD_LETTER_QUEUE` | não | Fila FIFO para onde o consumidor envia o que nunca poderá ser tratado (`wager-transactions-dlq.fifo`) |
 | `SQS_CONSUMER_WORKERS`, `SQS_CONSUMER_BATCH_SIZE`, `SQS_CONSUMER_POLL_WAIT` | não | Consumidor: laços de recebimento por instância (`4`), mensagens por recebimento (`10`, máximo do SQS) e espera do long polling (`20s`, máximo do SQS) |
 | `SQS_CONSUMER_PROCESSING_TIMEOUT` | não | Prazo para tratar uma mensagem (`20s`); precisa ficar abaixo do visibility timeout da fila (30s) |
@@ -198,6 +199,8 @@ O LocalStack executa [deploy/localstack/init/01-sqs.sh](deploy/localstack/init/0
 - `wager-transactions.fifo`: entrada, visibility timeout de 30s, redrive para a DLQ após 5 recebimentos;
 - `wager-transactions-dlq.fifo`: dead-letter queue;
 - `wager-events.fifo`: eventos de integração publicados pela outbox.
+
+Em seguida, [deploy/localstack/init/02-iam.sh](deploy/localstack/init/02-iam.sh) cria um usuário IAM por componente (`wagering-consumer` e `wagering-publisher`), cada um com a sua política de privilégio mínimo de [deploy/aws/iam](deploy/aws/iam), e a aplicação usa uma credencial por componente. O LocalStack gratuito não aplica essas políticas (só a AWS aplica); localmente elas ficam provisionadas e um teste confere que permitem exatamente o que o código de cada componente faz.
 
 ## Migrations
 

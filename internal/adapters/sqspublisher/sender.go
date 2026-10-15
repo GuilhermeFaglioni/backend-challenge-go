@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/fx"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsclient"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 )
@@ -47,7 +48,7 @@ type Sender struct {
 
 func New(api API, queueName string) *Sender { return &Sender{api: api, queueName: queueName} }
 
-func NewFromConfig(client *sqs.Client, cfg config.Config) *Sender {
+func NewFromConfig(client sqsclient.Publisher, cfg config.Config) *Sender {
 	return New(client, cfg.SQS.EventsQueue)
 }
 

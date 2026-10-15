@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadTheInputQueue",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": "arn:aws:sqs:*:*:wager-transactions.fifo"
+    },
+    {
+      "Sid": "WriteTheDeadLetterQueue",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:SendMessage"
+      ],
+      "Resource": "arn:aws:sqs:*:*:wager-transactions-dlq.fifo"
+    }
+  ]
+}

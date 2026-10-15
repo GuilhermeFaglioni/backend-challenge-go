@@ -98,7 +98,8 @@ func appConfig(t *testing.T, db infra.Database, sqsEndpoint string) config.Confi
 		AWS:             config.AWS{Region: "us-east-1", EndpointURL: sqsEndpoint},
 		SQS: config.SQS{
 			InputQueue: "wager-transactions.fifo", EventsQueue: "wager-events.fifo", DeadLetterQueue: "wager-transactions-dlq.fifo",
-			Consumer: config.Consumer{Workers: 2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 10 * time.Second, RetryBackoffBase: time.Second, RetryBackoffMax: 4 * time.Second},
+			Publisher: config.Publisher{Credentials: config.Credentials{AccessKeyID: "wagering-publisher-test", SecretAccessKey: "test"}},
+			Consumer:  config.Consumer{Credentials: config.Credentials{AccessKeyID: "wagering-consumer-test", SecretAccessKey: "test"}, Workers: 2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 10 * time.Second, RetryBackoffBase: time.Second, RetryBackoffMax: 4 * time.Second},
 		},
 		OIDC: config.OIDC{
 			IssuerURL:    kc.IssuerURL(),
