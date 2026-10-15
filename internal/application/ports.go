@@ -7,10 +7,12 @@ package application
 import (
 	"context"
 	"errors"
+	"math/big"
 
 	"github.com/google/uuid"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/event"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wager"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet"
 )
@@ -142,6 +144,25 @@ type LedgerReader interface {
 	// written later is always after, so a reader that has seen up to a position never
 	// finds an earlier one appearing.
 	List(ctx context.Context, walletID uuid.UUID, after int64, limit int) ([]LedgerRecord, error)
+}
+
+// LedgerAudit is what a wallet's books look like at one instant: the balance it stores
+// and the sums of its ledger. Credits and debits are kept apart so that neither can
+// overflow what a single signed sum could.
+type LedgerAudit struct {
+	Currency money.Currency
+	Stored   int64 // balance_minor
+	Credits  *big.Int
+	Debits   *big.Int
+	Entries  int64
+}
+
+// LedgerAuditor reads a wallet's books for reconciliation.
+type LedgerAuditor interface {
+	// Audit reads the stored balance and the ledger in ONE consistent snapshot, read
+	// only, so that writes going on at the same time cannot make them disagree. It
+	// changes nothing. ErrWalletNotFound if there is no such wallet.
+	Audit(ctx context.Context, walletID uuid.UUID) (LedgerAudit, error)
 }
 
 // ErrWalletNotFound: there is no wallet with that id.

@@ -17,6 +17,7 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/openwallet"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/processwager"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/reconcile"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
@@ -32,6 +33,8 @@ var Module = fx.Module("httpapi",
 		NewWagering,
 		NewTransactions,
 		NewLedger,
+		NewReconciliation,
+		func(uc *reconcile.UseCase) Reconciler { return uc },
 		func(uc *processwager.UseCase) OperationProcessor { return uc },
 	),
 	fx.Invoke(func(*http.Server) {}),
@@ -40,23 +43,24 @@ var Module = fx.Module("httpapi",
 type ServerParams struct {
 	fx.In
 
-	Lifecycle    fx.Lifecycle
-	Shutdowner   fx.Shutdowner
-	Config       config.Config
-	Logger       *slog.Logger
-	Health       *health.Registry
-	Metrics      *prometheus.Registry
-	Authn        Authenticator
-	Wallets      *Wallets
-	Wagering     *Wagering
-	Transactions *Transactions
-	Ledger       *Ledger
+	Lifecycle      fx.Lifecycle
+	Shutdowner     fx.Shutdowner
+	Config         config.Config
+	Logger         *slog.Logger
+	Health         *health.Registry
+	Metrics        *prometheus.Registry
+	Authn          Authenticator
+	Wallets        *Wallets
+	Wagering       *Wagering
+	Transactions   *Transactions
+	Ledger         *Ledger
+	Reconciliation *Reconciliation
 }
 
 func NewServer(p ServerParams) *http.Server {
 	routes := NewRoutes(p.Authn, p.Logger, p.Metrics)
 	routes.AllowOrigins(p.Config.CORSAllowedOrigins)
-	registerRoutes(routes, p.Health, p.Metrics, p.Wallets, p.Wagering, p.Transactions, p.Ledger)
+	registerRoutes(routes, p.Health, p.Metrics, p.Wallets, p.Wagering, p.Transactions, p.Ledger, p.Reconciliation)
 
 	srv := &http.Server{
 		Addr:              p.Config.HTTPAddr,

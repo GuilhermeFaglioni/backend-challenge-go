@@ -371,7 +371,7 @@ func servesTheRegistry(lit *ast.CompositeLit) bool {
 func TestTheApplicationsRouteTableBuilds(t *testing.T) {
 	r := newRoutes()
 	require.NotPanics(t, func() {
-		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewWagering(&fakeProcessor{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewTransactions(&scopedReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewLedger(&fakeLedger{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
+		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewWagering(&fakeProcessor{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewTransactions(&scopedReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewLedger(&fakeLedger{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewReconciliation(&fakeReconciler{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
 	})
 	require.NotEmpty(t, r.Registered())
 }
@@ -390,7 +390,7 @@ func TestTheRegisteredRoutesAreExactlyTheDocumentedOnes(t *testing.T) {
 
 	r := newRoutes()
 	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
-	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger), NewLedger(&fakeLedger{}, &fakeReader{}, logger))
+	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger), NewLedger(&fakeLedger{}, &fakeReader{}, logger), NewReconciliation(&fakeReconciler{}, logger))
 	registered := map[string]bool{}
 	for _, route := range r.Registered() {
 		registered[route.Pattern] = true

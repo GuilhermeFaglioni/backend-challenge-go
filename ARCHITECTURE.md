@@ -403,6 +403,10 @@ O endpoint não recebe chave de idempotência. Um reenvio depois de um timeout r
 
 A reconciliação nunca altera o saldo nem o ledger. Ela responde `200` mesmo quando há divergência, já que a divergência é um resultado da verificação, não um erro da requisição.
 
+**No código (`internal/application/reconcile`, `internal/adapters/postgres/ledger_auditor.go`):** o auditor abre a transação `REPEATABLE READ READ ONLY` e, antes de ler qualquer coisa, confere com `current_setting` que ela é mesmo isso (um pooler ou um padrão de sessão poderia enfraquecê-la em silêncio); recusar é melhor que auditar com outro isolamento. Os créditos e débitos são somados como `numeric` e mantidos em `big.Int` até serem conferidos contra o intervalo de um `int64`: um ledger que soma mais do que um saldo comporta é um erro (`ErrBooksOutOfRange`), nunca um valor que dá a volta. A `difference` é sempre `guardado − calculado`, então é negativa quando o ledger explica mais do que está guardado. O log `ERROR` carrega `walletId`, `difference`, moeda e `checkedEntries`; as métricas são `reconciliations_total{result}` (`consistent`, `divergent`) e `reconciliation_divergences_total`.
+
+Como o gatilho de coerência impede que as duas versões divirjam por meio da aplicação, os testes forçam uma divergência de verdade: o dono do schema desliga os gatilhos (`ALTER TABLE wallets DISABLE TRIGGER USER`) e altera o saldo. Dezenas de reconciliações concorrentes com apostas sendo gravadas na mesma carteira nunca encontram divergência, e uma reconciliação não muda nem a versão física de nenhuma linha.
+
 ## 10. Referências pendentes e reversões
 
 ### Tabela de movimentações

@@ -82,6 +82,12 @@ O ledger de uma carteira (somente o serviço interno), da entrada mais antiga pa
 curl -s "localhost:8081/wallets/<id-da-carteira>/ledger?limit=50" -H "Authorization: Bearer $TOKEN"
 ```
 
+Reconciliar uma carteira (somente o serviço interno): recalcula o saldo a partir do ledger e compara com o saldo guardado. Responde `200` mesmo quando há divergência, com `consistent:false` e a `difference` (guardado menos calculado); a divergência também vira um log `ERROR` e incrementa `reconciliation_divergences_total`. Nada é alterado.
+
+```bash
+curl -s -X POST localhost:8081/wallets/<id-da-carteira>/reconciliation -H "Authorization: Bearer $TOKEN"
+```
+
 Outros endpoints:
 
 ```bash
@@ -287,7 +293,7 @@ Em caso de falha, os logs de cada instância e de cada container vão para `INTE
 
 ### Garantias financeiras com três processos
 
-`test/multiinstance/guarantees_test.go` roda os cenários obrigatórios do desafio pela API HTTP contra três processos reais (cada um com suas conexões e memória), com o detector de corrida: a mesma aposta enviada 50 vezes em paralelo é debitada uma vez; 100,00 com duas apostas de 80,00 ao mesmo tempo dão uma processada, uma `INSUFFICIENT_FUNDS`, saldo 20,00 e um único débito; operações em carteiras diferentes não esperam umas pelas outras; e, depois de reiniciar todas as instâncias, o que foi processado continua sendo reproduzido com a resposta original e o saldo igual. Cada cenário termina conferindo que o saldo é a soma dos créditos menos os débitos do ledger. Esta suíte já encontrou uma corrida real (ver ARCHITECTURE.md, seção 8).
+`test/multiinstance/guarantees_test.go` roda os cenários obrigatórios do desafio pela API HTTP contra três processos reais (cada um com suas conexões e memória), com o detector de corrida: a mesma aposta enviada 50 vezes em paralelo é debitada uma vez; 100,00 com duas apostas de 80,00 ao mesmo tempo dão uma processada, uma `INSUFFICIENT_FUNDS`, saldo 20,00 e um único débito; operações em carteiras diferentes não esperam umas pelas outras; e, depois de reiniciar todas as instâncias, o que foi processado continua sendo reproduzido com a resposta original e o saldo igual. Cada cenário termina conferindo que o saldo é a soma dos créditos menos os débitos do ledger, e pedindo a outro processo que diga o mesmo pelo endpoint de reconciliação. Esta suíte já encontrou uma corrida real (ver ARCHITECTURE.md, seção 8).
 
 ### Proteção da `main`
 

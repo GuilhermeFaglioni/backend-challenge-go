@@ -304,6 +304,21 @@ if entries[0]["balanceAfter"]["amount"] != "100.00" or entries[1]["balanceBefore
 PY
 ok "the ledger lists the opening and the bet, chained"
 
+# The books agree: the stored balance is what the ledger adds up to.
+status=$(api_status POST "$second_port" "/wallets/${wallet_id}/reconciliation" "$internal_token")
+[ "$status" = "200" ] || fail "reconciling the wallet through :${second_port} answered ${status}: $(cat "$SMOKE_BODY")"
+RECONCILIATION_BODY="$(cat "$SMOKE_BODY")" python3 - <<'PY' || fail "the reconciliation does not find the books in agreement at 75.00"
+import json, os, sys
+
+result = json.loads(os.environ["RECONCILIATION_BODY"])
+if not result["consistent"] or result["storedBalance"]["amount"] != "75.00" or result["calculatedBalance"]["amount"] != "75.00" or result["difference"]["amount"] != "0.00" or result["checkedEntries"] != 2:
+    print(result, file=sys.stderr)
+    sys.exit(1)
+PY
+status=$(api_status POST "$second_port" "/wallets/${wallet_id}/reconciliation" "$provider_token")
+[ "$status" = "403" ] || fail "a provider reconciling a wallet answered ${status}, not 403"
+ok "the reconciliation finds the books in agreement, and is the internal role's alone"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"
