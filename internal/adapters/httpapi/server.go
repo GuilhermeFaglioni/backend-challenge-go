@@ -15,6 +15,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/openwallet"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
@@ -25,6 +26,8 @@ var Module = fx.Module("httpapi",
 		NewServer,
 		// The server asks for an Authenticator; the verifier is what satisfies it.
 		func(v *auth.Verifier) Authenticator { return v },
+		NewWallets,
+		func(uc *openwallet.UseCase) WalletOpener { return uc },
 	),
 	fx.Invoke(func(*http.Server) {}),
 )
@@ -39,11 +42,13 @@ type ServerParams struct {
 	Health     *health.Registry
 	Metrics    *prometheus.Registry
 	Authn      Authenticator
+	Wallets    *Wallets
 }
 
 func NewServer(p ServerParams) *http.Server {
 	routes := NewRoutes(p.Authn, p.Logger, p.Metrics)
-	registerRoutes(routes, p.Health, p.Metrics)
+	routes.AllowOrigins(p.Config.CORSAllowedOrigins)
+	registerRoutes(routes, p.Health, p.Metrics, p.Wallets)
 
 	srv := &http.Server{
 		Addr:              p.Config.HTTPAddr,

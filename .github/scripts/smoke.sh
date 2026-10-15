@@ -177,4 +177,74 @@ redrive=$(awslocal_sqs get-queue-attributes \
   || fail "input queue maxReceiveCount is not 5: ${redrive}"
 ok "input queue redrives to the DLQ after 5 receives"
 
+# --- wallet API with a real token ---------------------------------------------
+
+internal_token_response=$(curl -fsS -X POST "${REALM_URL}/protocol/openid-connect/token" \
+  -d grant_type=client_credentials \
+  -d client_id=internal-service \
+  -d client_secret=internal-service-local-secret) || fail "keycloak refused the internal-service client_credentials request"
+internal_token=$(json_get access_token <<<"$internal_token_response")
+[ -n "$internal_token" ] || fail "no access token for internal-service"
+
+first_port=$(echo "$INSTANCE_PORTS" | awk '{print $1}')
+second_port=$(echo "$INSTANCE_PORTS" | awk '{print $2}')
+third_port=$(echo "$INSTANCE_PORTS" | awk '{print $3}')
+player_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+open_body="{\"playerId\":\"${player_id}\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}"
+
+# The token is passed through a variable to curl; nothing is echoed.
+api_status() { # <method> <port> <path> <token> [body]
+  local method="$1" port="$2" path="$3" token="$4" body="${5:-}"
+  local args=(-sS -o "${SMOKE_BODY}" -w '%{http_code}' -X "$method" "http://localhost:${port}${path}")
+  [ -n "$token" ] && args+=(-H "Authorization: Bearer ${token}")
+  [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
+  curl "${args[@]}"
+}
+SMOKE_BODY=$(mktemp)
+trap 'rm -f "$SMOKE_BODY"' EXIT
+
+[ "$(api_status POST "$first_port" /wallets "")" = "401" ] || fail "POST /wallets without a token is not 401"
+[ "$(api_status POST "$first_port" /wallets "$(json_get access_token <<<"$token_response")" "$open_body")" = "403" ] \
+  || fail "POST /wallets with a provider token is not 403"
+ok "wallet endpoints refuse a missing token (401) and a provider token (403)"
+
+status=$(api_status POST "$first_port" /wallets "$internal_token" "$open_body")
+[ "$status" = "201" ] || fail "POST /wallets with an internal token answered ${status}: $(cat "$SMOKE_BODY")"
+wallet_id=$(json_get id < "$SMOKE_BODY")
+[ -n "$wallet_id" ] || fail "the created wallet has no id"
+ok "an internal token opened wallet ${wallet_id} through :${first_port}"
+
+# Another instance sees it: the instances share the database, not memory.
+status=$(api_status GET "$second_port" "/wallets/${wallet_id}" "$internal_token")
+[ "$status" = "200" ] || fail "GET /wallets/${wallet_id} through :${second_port} answered ${status}"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "100.00" ] || fail "the wallet read through :${second_port} does not have 100.00"
+ok "the wallet is readable through another instance (:${second_port}) with its balance"
+
+status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
+[ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
+[ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"
+ok "a repeated open through a third instance is a 409 that names the wallet"
+
+# --- swagger ui and CORS -----------------------------------------------------
+
+wait_for "swagger ui" curl -fsS "http://localhost:8089/"
+ok "swagger ui is up on :8089"
+
+preflight=$(curl -sS -o /dev/null -D - -X OPTIONS "http://localhost:${first_port}/wallets" \
+  -H 'Origin: http://localhost:8089' -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: authorization,content-type')
+echo "$preflight" | grep -qi '^access-control-allow-origin: http://localhost:8089' \
+  || fail "the API does not allow the swagger ui origin in a preflight"
+ok "the API answers the swagger ui preflight"
+
+token_preflight=$(curl -sS -o /dev/null -D - -X OPTIONS "${REALM_URL}/protocol/openid-connect/token" \
+  -H 'Origin: http://localhost:8089' -H 'Access-Control-Request-Method: POST')
+echo "$token_preflight" | grep -qi '^access-control-allow-origin: http://localhost:8089' \
+  || fail "keycloak does not allow the swagger ui origin on the token endpoint"
+ok "keycloak allows the swagger ui origin on the token endpoint"
+
+spec_status=$(curl -sS -o /dev/null -w '%{http_code}' "http://localhost:${first_port}/openapi.yaml")
+[ "$spec_status" = "200" ] || fail "GET /openapi.yaml answered ${spec_status}"
+ok "the contract is served at /openapi.yaml"
+
 echo "SMOKE PASSED"

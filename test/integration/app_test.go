@@ -42,6 +42,13 @@ func (l *logBuffer) Write(p []byte) (int, error) {
 	return l.buf.Write(p)
 }
 
+// String is everything logged so far.
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
 // messages returns the "msg" field of every log line, in order.
 func (l *logBuffer) messages(t *testing.T) []string {
 	t.Helper()

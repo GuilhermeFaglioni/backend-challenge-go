@@ -59,11 +59,11 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context, repos 
 	for attempt := 1; ; attempt++ {
 		err := u.once(ctx, fn)
 		if err == nil || !isRetryable(err) || attempt >= u.maxAttempts {
-			return err
+			return markTransient(err)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w (giving up retrying: %w)", err, ctx.Err())
+			return markTransient(fmt.Errorf("%w (giving up retrying: %w)", err, ctx.Err()))
 		case <-time.After(u.backoff(attempt)):
 		}
 	}

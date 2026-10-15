@@ -55,6 +55,21 @@ type OutboxRepository interface {
 	Add(ctx context.Context, e event.Event) error
 }
 
+// WalletReader reads wallets outside any unit of work: a single consistent read.
+type WalletReader interface {
+	// ByID returns the wallet, or ErrWalletNotFound.
+	ByID(ctx context.Context, id uuid.UUID) (wallet.Wallet, error)
+}
+
+// ErrWalletNotFound: there is no wallet with that id.
+var ErrWalletNotFound = errors.New("wallet not found")
+
+// ErrTemporarilyUnavailable marks an error that is the infrastructure's, not the
+// request's, and that trying again later may fix: the database cannot be reached,
+// a connection dropped, the caller's context ended, or a serialization failure or
+// deadlock persisted through every retry. Adapters wrap such errors with it.
+var ErrTemporarilyUnavailable = errors.New("a dependency is temporarily unavailable")
+
 // ErrWalletAlreadyExists is matched by errors.Is for *WalletAlreadyExistsError.
 var ErrWalletAlreadyExists = errors.New("a wallet already exists for the player and currency")
 

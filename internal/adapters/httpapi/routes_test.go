@@ -14,10 +14,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/api"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
@@ -368,7 +370,29 @@ func servesTheRegistry(lit *ast.CompositeLit) bool {
 func TestTheApplicationsRouteTableBuilds(t *testing.T) {
 	r := newRoutes()
 	require.NotPanics(t, func() {
-		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry())
+		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
 	})
 	require.NotEmpty(t, r.Registered())
+}
+
+// The OpenAPI document and the routes the application registers describe the same
+// API: a route nobody documented, or a documented one that is not served, fails here.
+func TestTheRegisteredRoutesAreExactlyTheDocumentedOnes(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(api.OpenAPI)
+	require.NoError(t, err)
+	documented := map[string]bool{}
+	for path, item := range doc.Paths.Map() {
+		for method := range item.Operations() {
+			documented[method+" "+path] = true
+		}
+	}
+
+	r := newRoutes()
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger))
+	registered := map[string]bool{}
+	for _, route := range r.Registered() {
+		registered[route.Pattern] = true
+	}
+	require.Equal(t, documented, registered)
 }

@@ -18,6 +18,9 @@ type Config struct {
 	HTTPAddr        string        `env:"HTTP_ADDR" envDefault:":8080"`
 	LogLevel        string        `env:"LOG_LEVEL" envDefault:"info"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"30s"`
+	// CORSAllowedOrigins are the browser origins (scheme://host[:port]) allowed to
+	// call the API, for the Swagger UI. Empty, the default, allows none.
+	CORSAllowedOrigins []string `env:"CORS_ALLOWED_ORIGINS" envSeparator:","`
 
 	Database Database `envPrefix:"DATABASE_"`
 	AWS      AWS      `envPrefix:"AWS_"`
@@ -98,6 +101,11 @@ func (c Config) Validate() error {
 	if c.OIDC.Audience == "" {
 		errs = append(errs, errors.New("OIDC_AUDIENCE must not be empty"))
 	}
+	for _, origin := range c.CORSAllowedOrigins {
+		if err := validateOrigin(origin); err != nil {
+			errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS: %q: %w", origin, err))
+		}
+	}
 
 	return errors.Join(errs...)
 }
@@ -109,6 +117,23 @@ func validateHTTPURL(raw string) error {
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("must be an absolute http(s) URL, got %q", raw)
+	}
+	return nil
+}
+
+// validateOrigin accepts only a bare origin: scheme, host and optional port. A
+// wildcard, a path or a trailing slash would silently never match (or match too
+// much), so they are refused at start-up.
+func validateOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("must be scheme://host[:port], with http or https")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return errors.New("must have no path, query, fragment or user info")
 	}
 	return nil
 }

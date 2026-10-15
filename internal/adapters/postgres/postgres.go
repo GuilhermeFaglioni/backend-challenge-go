@@ -19,6 +19,7 @@ var Module = fx.Module("postgres",
 	fx.Provide(
 		NewPool,
 		fx.Annotate(NewUnitOfWork, fx.As(new(application.UnitOfWork))),
+		fx.Annotate(NewWalletReader, fx.As(new(application.WalletReader))),
 		fx.Annotate(newReadinessCheck, fx.ResultTags(`group:"readiness"`)),
 	),
 )
