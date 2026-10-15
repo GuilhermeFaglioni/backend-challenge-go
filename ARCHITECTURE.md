@@ -735,7 +735,7 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
 - **Autorização:** credenciais ausentes, inválidas e expiradas; isolamento entre provedores (consultas e replays); ausência de efeito financeiro em acessos negados.
 - Execução com `go test -race` onde aplicável.
 
-**Resultados medidos** (15/10/2026, macOS arm64, Docker Desktop, Go 1.27.2; a camada de integração e a multi-instância rodam em containers reais): 464 testes unitários (a cobertura só dos testes unitários é de 96,9% a 98,2% em cada pacote de `internal/domain/`; o gate do CI exige 90% sobre o relatório combinado das três camadas), 174 testes de integração (`go test -tags integration -race`, cerca de 2m20s) e 24 de multi-instância (`go test -tags multiinstance -race -shuffle=on`, 3m12s, com processos reais). Os oito cenários obrigatórios do enunciado e as evidências de cada linha da tabela de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md).
+**Resultados medidos** (15/10/2026, macOS arm64, Docker Desktop, Go 1.27.2; a camada de integração e a multi-instância rodam em containers reais): 471 testes unitários (a cobertura só dos testes unitários é de 96,9% a 98,2% em cada pacote de `internal/domain/`; o gate do CI exige 90% sobre o relatório combinado das três camadas), 174 testes de integração (`go test -tags integration -race`, cerca de 2m20s) e 24 de multi-instância (`go test -tags multiinstance -race -shuffle=on`, 3m12s, com processos reais). Os oito cenários obrigatórios do enunciado e as evidências de cada linha da tabela de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md).
 
 ## 17. Limitações, interpretações e trabalho não concluído
 
@@ -766,17 +766,18 @@ Limitações conhecidas:
 - Escala fixa de duas casas (sem moedas de outra escala).
 - A inbox e a outbox não têm política de retenção: crescem uma linha por mensagem e por evento. Para produção seria preciso arquivar ou apagar as concluídas depois de uma janela.
 - A reconciliação soma o ledger inteiro da carteira (leitura em um snapshot): o custo cresce com o número de lançamentos; não há saldo incremental nem checkpoint.
-- O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
+- O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms quando não há nada a fazer); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
+- **Vazão da outbox por carteira:** a ordem por carteira só deixa reservar um evento de cada carteira por vez, então uma carteira é publicada a cerca de 20 eventos/s (medido). Uma carteira que gere eventos mais rápido do que isso (cada operação gera dois) acumula fila e atraso enquanto durar a carga; nada se perde e a ordem se mantém. Reservar e enviar vários eventos consecutivos da mesma carteira no mesmo lote removeria o limite (ver [docs/LOAD_TEST.md](docs/LOAD_TEST.md)).
 - Cada tentativa do worker é uma transação por operação; um lote grande de esperas na mesma carteira é resolvido em série (o lock da carteira serializa de qualquer modo).
 - `/metrics` sem autenticação (assume rede interna).
 - Autenticação: o emissor e o JWKS podem ser `http` (necessário no Compose local; em produção devem ser `https`); não há limite para o tempo de vida do token além do `exp` que o IdP emite; cada requisição recusada gera uma linha de log `Info` (um sondador barulhento enche o log, mas não o contador, que tem rótulos fixos); o prazo de início do Fx usa o mesmo valor do shutdown (`SHUTDOWN_TIMEOUT`), e é ele que limita a espera pelo Keycloak.
 - Eventos de saída são at-least-once; consumidores precisam deduplicar por `eventId`.
 - Janela de deduplicação do FIFO (5 minutos) não é usada como garantia.
-- Não há medição de carga (o teste de carga é opcional e não foi feito; ver abaixo): os números de throughput e latência do desenho não foram medidos.
+- O teste de carga mede ordens de grandeza num notebook, com o gerador competindo pelos mesmos recursos, e o ruído entre rodadas idênticas é grande (até ~3×); não há meta de throughput nem intervalo de confiança ([docs/LOAD_TEST.md](docs/LOAD_TEST.md)).
 
-Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga é o último ticket opcional do [roadmap](docs/ROADMAP.md) (R22), não feito; os motivos da escolha estão lá.
+Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga (R22) foi feito: comando, método, ambiente e resultados em [docs/LOAD_TEST.md](docs/LOAD_TEST.md). Ele achou, e este mesmo trabalho corrigiu, uma espera ociosa do publicador da outbox que limitava cada carteira a ~2 eventos/s.
 
-Trabalho não concluído: nada do que o enunciado exige. Ficaram de fora os diferenciais opcionais acima (partidas dobradas, tracing, dashboards e o teste de carga), a retenção da inbox e da outbox e a possibilidade de `FAILED` por falha permanente (ver as limitações). A entrega, com as evidências por critério, os oito cenários e as decisões finais, está em [docs/DELIVERY.md](docs/DELIVERY.md).
+Trabalho não concluído: nada do que o enunciado exige. Ficaram de fora os diferenciais opcionais acima (partidas dobradas, tracing e dashboards), a retenção da inbox e da outbox e a possibilidade de `FAILED` por falha permanente (ver as limitações). A entrega, com as evidências por critério, os oito cenários e as decisões finais, está em [docs/DELIVERY.md](docs/DELIVERY.md).
 
 ## 18. CI/CD
 

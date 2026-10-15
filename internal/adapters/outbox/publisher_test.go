@@ -24,6 +24,7 @@ type fakeStore struct {
 	mu sync.Mutex
 
 	queue       []application.OutboxEntry // what Reserve hands out, in order
+	perReserve  int                       // if set, the most Reserve hands out at once, however much it is asked for
 	reserveErr  error
 	reserveCall int
 
@@ -51,6 +52,9 @@ func (s *fakeStore) Reserve(_ context.Context, limit int, lease time.Duration) (
 		return nil, s.reserveErr
 	}
 	n := min(limit, len(s.queue))
+	if s.perReserve > 0 {
+		n = min(n, s.perReserve)
+	}
 	out := s.queue[:n]
 	s.queue = s.queue[n:]
 	return out, nil
@@ -379,6 +383,27 @@ func TestTheLoopDoesNotWaitBetweenFullBatches(t *testing.T) {
 	waitFor(t, "three full batches with a one hour poll interval", func() bool {
 		published, _, _ := f.store.snapshot()
 		return len(published) == 30
+	})
+}
+
+// The next event of a wallet can only be reserved once the one before it is recorded, so a
+// cycle often finds less than a full batch. Waiting the poll interval after each of them
+// would send one event per wallet per interval.
+func TestTheLoopDoesNotWaitAfterACycleThatFoundWorkEvenIfTheBatchWasNotFull(t *testing.T) {
+	var entries []application.OutboxEntry
+	for i := 0; i < 6; i++ {
+		entries = append(entries, entry(0))
+	}
+	f := newFixture(t, entries...)
+	f.store.perReserve = 1
+	f.p = New(f.store, f.sender, Options{PollInterval: time.Hour, BatchSize: 10, Lease: time.Minute,
+		Logger: slog.New(slog.NewJSONHandler(&lockedWriter{w: f.logs}, nil)), Registerer: prometheus.NewRegistry()})
+	f.p.Start()
+	t.Cleanup(func() { _ = f.p.Stop(context.Background()) })
+
+	waitFor(t, "six cycles of one event each with a one hour poll interval", func() bool {
+		published, _, _ := f.store.snapshot()
+		return len(published) == 6
 	})
 }
 

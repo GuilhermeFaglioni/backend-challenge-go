@@ -192,8 +192,11 @@ func (p *Publisher) loop() {
 			return
 		default:
 		}
-		// A full batch means there is probably more: go again without waiting.
-		if p.cycle(p.workCtx) >= p.opts.BatchSize {
+		// Having found work means there is probably more, and the next event of a wallet
+		// can only be sent once the one before it is recorded, so a publisher that waited
+		// the poll interval after each cycle would send one event per wallet per interval.
+		// It waits only when a cycle found nothing.
+		if p.cycle(p.workCtx) > 0 {
 			continue
 		}
 		select {

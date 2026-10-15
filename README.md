@@ -5,6 +5,7 @@ Serviço em Go que processa operações financeiras de provedores de jogos (`BET
 - Enunciado do desafio: [docs/CHALLENGE.md](docs/CHALLENGE.md)
 - Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md) e os registros curtos em [docs/adr](docs/adr)
 - Ordem de construção e definição de pronto: [docs/ROADMAP.md](docs/ROADMAP.md)
+- Entrega, evidência por critério e resultado dos cenários obrigatórios: [docs/DELIVERY.md](docs/DELIVERY.md); teste de carga: [docs/LOAD_TEST.md](docs/LOAD_TEST.md)
 - Vocabulário do projeto: [CONTEXT.md](CONTEXT.md)
 
 > **Status: entregue.** Todos os endpoints do enunciado, o consumidor SQS com inbox, a outbox, as operações `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (inclusive à espera da referência), a reconciliação, a autenticação e o CI/CD estão implementados e testados. O que foi medido, o que ficou de fora e a evidência de cada critério de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md); as decisões, em [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -322,6 +323,10 @@ Em caso de falha, os logs de cada instância e de cada container vão para `INTE
 ### Garantias financeiras com três processos
 
 `test/multiinstance/guarantees_test.go` roda os cenários obrigatórios do desafio pela API HTTP contra três processos reais (cada um com suas conexões e memória), com o detector de corrida: a mesma aposta enviada 50 vezes em paralelo é debitada uma vez; 100,00 com duas apostas de 80,00 ao mesmo tempo dão uma processada, uma `INSUFFICIENT_FUNDS`, saldo 20,00 e um único débito; operações em carteiras diferentes não esperam umas pelas outras; e, depois de reiniciar todas as instâncias, o que foi processado continua sendo reproduzido com a resposta original e o saldo igual. Cada cenário termina conferindo que o saldo é a soma dos créditos menos os débitos do ledger, e pedindo a outro processo que diga o mesmo pelo endpoint de reconciliação. Esta suíte já encontrou uma corrida real (ver ARCHITECTURE.md, seção 8).
+
+### Teste de carga
+
+Com o Compose de pé, `make loadtest` mede carteiras independentes contra uma carteira só (1, 4, 16 e 64 workers) e o custo dos triggers de coerência, e reporta throughput, p50/p95/p99, erros, conflitos de concorrência e o atraso da outbox. O método, o ambiente e os resultados registrados estão em [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 ### Proteção da `main`
 
