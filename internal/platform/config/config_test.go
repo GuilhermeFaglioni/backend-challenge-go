@@ -23,12 +23,8 @@ func validConfig() Config {
 			DiscoveryURL: "http://keycloak:8080/realms/wagering",
 			Audience:     "wallet-api",
 		},
-<<<<<<< HEAD
-		Outbox:    Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second},
+		Outbox:    Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second},
 		Retention: Retention{Inbox: 336 * time.Hour, Outbox: 168 * time.Hour, Interval: time.Hour, BatchSize: 10000},
-=======
-		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second},
->>>>>>> origin/main
 		PendingReference: PendingReference{
 			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute, MaxErrors: 5,
 			PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second,
