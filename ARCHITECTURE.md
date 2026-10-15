@@ -172,6 +172,8 @@ Resumo das tabelas e das garantias impostas pelo schema (as colunas completas fi
 
 `UNIQUE (player_id, currency)` garante uma única carteira por jogador e moeda (conflito ao abrir outra).
 
+**Agregado (`internal/domain/wallet`):** `Wallet` é um valor imutável. `Open` cria a carteira vazia e `OpenWithBalance` a cria já financiada pela transação `OPENING` (versão 1, com o lançamento de crédito de 0 até o saldo inicial); `Rehydrate` restaura o estado guardado sem aplicar movimento nem emitir evento, recusando só o que o banco nunca guardaria. `Debit` e `Credit` recebem um `Movement` (id do lançamento, id da Wager Transaction, valor, instante) e devolvem a carteira seguinte e o `LedgerEntry`; um movimento recusado não devolve nada utilizável. O valor precisa ser positivo e na moeda da carteira, um débito além do saldo é `ErrInsufficientFunds`, e a versão sobe em exatamente um a cada movimento aceito. `LedgerEntry` valida a aritmética (`balanceAfter = balanceBefore ± valor` conforme a direção, sem overflow) na construção, e é o mesmo construtor que restaura um lançamento guardado. Um teste de AST garante que o pacote só depende da biblioteca padrão, de `uuid` e de `money`.
+
 #### Coerência entre saldo e ledger imposta pelo banco
 
 O `CHECK (balance_minor >= 0)` é a **última barreira**, não a proteção principal. Ele não detecta um lost update (duas transações que leem 100 e gravam 20 deixam um valor válido) nem um lançamento duplicado com saldo suficiente. Quem evita essas situações são o lock por carteira (seção 7) e as constraints de unicidade (abaixo). Para que o banco também recuse um saldo alterado sem o lançamento correspondente, há dois triggers na tabela `wallets`:
