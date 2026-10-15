@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 
@@ -26,6 +27,10 @@ func TestOnlyInfrastructureTroubleIsMarkedTransient(t *testing.T) {
 		"a query cancelled":           pg("57014"),
 		"a network error":             &net.OpError{Op: "dial", Err: errors.New("refused")},
 		"a connect error":             &pgconn.ConnectError{},
+		"a connection that dropped":   fmt.Errorf("failed to receive message: %w", io.ErrUnexpectedEOF),
+		"the other side closed":       io.EOF,
+		"a closed connection":         net.ErrClosed,
+		"a concurrent update":         application.ErrConcurrentUpdate,
 	}
 	for name, err := range transient {
 		marked := markTransient(fmt.Errorf("wrapped: %w", err))

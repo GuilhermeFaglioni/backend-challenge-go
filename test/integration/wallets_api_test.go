@@ -20,13 +20,14 @@ import (
 )
 
 type walletAPI struct {
-	base     string
-	client   *contractClient
-	strict   *contractClient
-	pool     *pgxpool.Pool
-	logs     *logBuffer
-	internal string // tokens
-	provider string
+	base      string
+	client    *contractClient
+	strict    *contractClient
+	pool      *pgxpool.Pool
+	logs      *logBuffer
+	internal  string // tokens
+	provider  string // provider-a
+	providerB string
 }
 
 func startWalletAPI(t *testing.T) walletAPI {
@@ -41,12 +42,14 @@ func startWalletAPI(t *testing.T) walletAPI {
 	require.NoError(t, err)
 	providerToken, err := kc.Token(ctx, "provider-a", "provider-a-local-secret")
 	require.NoError(t, err)
+	providerBToken, err := kc.Token(ctx, "provider-b", "provider-b-local-secret")
+	require.NoError(t, err)
 
 	base := "http://" + cfg.HTTPAddr
 	strict := newContractClient(t, base)
 	return walletAPI{
 		base: base, strict: strict, client: strict.lenient(), pool: running.Pool, logs: running.Logs,
-		internal: internalToken, provider: providerToken,
+		internal: internalToken, provider: providerToken, providerB: providerBToken,
 	}
 }
 

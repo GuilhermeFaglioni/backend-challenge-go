@@ -46,6 +46,7 @@ func (f fakeAuthenticator) Verify(_ context.Context, token string) (auth.Princip
 
 var (
 	providerA = auth.NewPrincipal("sub-a", "provider-a", "provider-a", auth.RoleProvider)
+	providerB = auth.NewPrincipal("sub-b", "provider-b", "provider-b", auth.RoleProvider)
 	internal  = auth.NewPrincipal("sub-i", "internal-service", "", auth.RoleInternal)
 )
 
@@ -248,7 +249,7 @@ func TestEveryAuthenticationOutcomeStartsAtZeroInTheMetrics(t *testing.T) {
 	for _, want := range []auth.Reason{
 		auth.ReasonMissing, auth.ReasonMalformed, auth.ReasonUnsupportedAlgorithm, auth.ReasonUnknownKey,
 		auth.ReasonBadSignature, auth.ReasonExpired, auth.ReasonNotYetValid, auth.ReasonWrongIssuer,
-		auth.ReasonWrongAudience, auth.ReasonInvalidClaims, auth.ReasonKeysUnavailable, auth.ReasonForbidden,
+		auth.ReasonWrongAudience, auth.ReasonInvalidClaims, auth.ReasonKeysUnavailable, auth.ReasonForbidden, auth.ReasonProviderMismatch,
 	} {
 		require.Contains(t, reasons, string(want), "the counter has no series for %s until it first happens", want)
 	}
@@ -370,7 +371,7 @@ func servesTheRegistry(lit *ast.CompositeLit) bool {
 func TestTheApplicationsRouteTableBuilds(t *testing.T) {
 	r := newRoutes()
 	require.NotPanics(t, func() {
-		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
+		registerRoutes(r, health.NewRegistry(health.Params{Logger: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))), NewWagering(&fakeProcessor{}, slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))))
 	})
 	require.NotEmpty(t, r.Registered())
 }
@@ -389,7 +390,7 @@ func TestTheRegisteredRoutesAreExactlyTheDocumentedOnes(t *testing.T) {
 
 	r := newRoutes()
 	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
-	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger))
+	registerRoutes(r, health.NewRegistry(health.Params{Logger: logger}), prometheus.NewRegistry(), NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger))
 	registered := map[string]bool{}
 	for _, route := range r.Registered() {
 		registered[route.Pattern] = true

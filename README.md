@@ -58,6 +58,18 @@ curl -s -X POST localhost:8081/wallets -H "Authorization: Bearer $TOKEN" -H 'Con
 curl -s localhost:8082/wallets/<id-devolvido-acima> -H "Authorization: Bearer $TOKEN"
 ```
 
+Uma operação de um provedor (o token é de `provider-a` e o `providerId` do corpo precisa ser o dele; `playerId` e `walletId` são os da carteira aberta acima):
+
+```bash
+PROVIDER_TOKEN=$(curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-local-secret | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+```
+
+```bash
+curl -s -X POST localhost:8082/wagering/transactions -H "Authorization: Bearer $PROVIDER_TOKEN" -H 'Idempotency-Key: provider-a:transaction-123' -H 'Content-Type: application/json' -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
+```
+
+Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. Por enquanto só o tipo `BET` é processado.
+
 Outros endpoints:
 
 ```bash
