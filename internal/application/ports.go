@@ -128,6 +128,22 @@ type TransactionReader interface {
 // ErrTransactionNotFound: there is no such transaction among those the caller may read.
 var ErrTransactionNotFound = errors.New("transaction not found")
 
+// LedgerRecord is a ledger entry with its position in the wallet's sequence.
+type LedgerRecord struct {
+	Seq   int64
+	Entry wallet.LedgerEntry
+}
+
+// LedgerReader reads a wallet's ledger by pages.
+type LedgerReader interface {
+	// List returns up to limit entries of the wallet's ledger whose position is after
+	// the given one (0 for the beginning), oldest first. The position is the database's
+	// sequence, which for one wallet is also the order of commit: an entry that is
+	// written later is always after, so a reader that has seen up to a position never
+	// finds an earlier one appearing.
+	List(ctx context.Context, walletID uuid.UUID, after int64, limit int) ([]LedgerRecord, error)
+}
+
 // ErrWalletNotFound: there is no wallet with that id.
 var ErrWalletNotFound = errors.New("wallet not found")
 

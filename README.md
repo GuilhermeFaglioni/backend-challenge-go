@@ -76,6 +76,12 @@ curl -s localhost:8081/providers/provider-a/wagering/transactions/transaction-12
 
 Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. Por enquanto só o tipo `BET` é processado.
 
+O ledger de uma carteira (somente o serviço interno), da entrada mais antiga para a mais nova, com a abertura incluída; use o `nextCursor` de uma página como `cursor` da seguinte:
+
+```bash
+curl -s "localhost:8081/wallets/<id-da-carteira>/ledger?limit=50" -H "Authorization: Bearer $TOKEN"
+```
+
 Outros endpoints:
 
 ```bash

@@ -21,7 +21,7 @@ func newTestMux(checks ...health.Check) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics := prometheus.NewRegistry()
 	routes := NewRoutes(fakeAuthenticator{}, logger, metrics)
-	registerRoutes(routes, health.NewRegistry(health.Params{Logger: logger, Checks: checks}), metrics, NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger))
+	registerRoutes(routes, health.NewRegistry(health.Params{Logger: logger, Checks: checks}), metrics, NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger), NewLedger(&fakeLedger{}, &fakeReader{}, logger))
 	return routes.Handler()
 }
 
@@ -73,6 +73,7 @@ func TestNewServerAppliesTheConfiguredCORSOrigins(t *testing.T) {
 		Wallets:      NewWallets(&fakeOpener{}, &fakeReader{}, logger),
 		Wagering:     NewWagering(&fakeProcessor{}, logger),
 		Transactions: NewTransactions(&scopedReader{}, logger),
+		Ledger:       NewLedger(&fakeLedger{}, &fakeReader{}, logger),
 	})
 
 	preflight := func(origin string) *httptest.ResponseRecorder {
