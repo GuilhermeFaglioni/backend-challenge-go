@@ -286,6 +286,24 @@ status=$(api_status GET "$third_port" "/providers/provider-a/wagering/transactio
 [ "$status" = "403" ] || fail "provider-b reading under provider-a's name answered ${status}, not 403"
 ok "a provider reads only its own transactions (404 for ids it does not own, 403 for another's namespace)"
 
+# The ledger holds the opening and the bet, oldest first.
+status=$(api_status GET "$third_port" "/wallets/${wallet_id}/ledger?limit=10" "$internal_token")
+[ "$status" = "200" ] || fail "listing the ledger through :${third_port} answered ${status}: $(cat "$SMOKE_BODY")"
+LEDGER_BODY="$(cat "$SMOKE_BODY")" python3 - <<'PY' || fail "the ledger is not the opening followed by the bet"
+import json, os, sys
+
+page = json.loads(os.environ["LEDGER_BODY"])
+entries = page["entries"]
+directions = [e["direction"] for e in entries]
+if directions != ["CREDIT", "DEBIT"] or "nextCursor" in page:
+    print(f"directions {directions}, cursor {page.get('nextCursor')}", file=sys.stderr)
+    sys.exit(1)
+if entries[0]["balanceAfter"]["amount"] != "100.00" or entries[1]["balanceBefore"]["amount"] != "100.00" or entries[1]["balanceAfter"]["amount"] != "75.00":
+    print("the entries do not chain 0.00 -> 100.00 -> 75.00", file=sys.stderr)
+    sys.exit(1)
+PY
+ok "the ledger lists the opening and the bet, chained"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"

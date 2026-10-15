@@ -305,6 +305,60 @@ paths:
         '500': { $ref: '#/components/responses/Internal' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
+  /wallets/{walletId}/ledger:
+    get:
+      tags: [Wallets]
+      operationId: listLedger
+      summary: List a wallet's ledger
+      description: |
+        Role `internal`. The ledger is read oldest entry first, a page at a time, and
+        includes the opening credit of a funded wallet.
+
+        `nextCursor` is opaque: pass it back as `cursor` to get the next page, and do not
+        build or change one. A walk that follows the cursors to the end sees every entry
+        once, in the order they were written, even while new entries are being written:
+        the cursor marks a position in the wallet's sequence, not a time.
+      parameters:
+        - name: walletId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Absent for the first page. A cursor of another wallet, or one that is not a cursor, is `400`.
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: limit
+          in: query
+          required: false
+          description: Entries per page, from 1 to 200.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: A page of the ledger.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerPage'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: There is no wallet with that id.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /health/live:
     get:
       tags: [Operations]
@@ -572,6 +626,37 @@ components:
           type: string
           format: date-time
           description: When the transaction reached its final state; absent while it has not.
+
+    LedgerEntry:
+      type: object
+      required: [id, walletId, transactionId, direction, money, balanceBefore, balanceAfter, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        walletId: { type: string, format: uuid }
+        transactionId:
+          type: string
+          format: uuid
+          description: The Wager Transaction that caused the movement.
+        direction: { type: string, enum: [DEBIT, CREDIT] }
+        money:
+          $ref: '#/components/schemas/Money'
+        balanceBefore:
+          $ref: '#/components/schemas/Money'
+        balanceAfter:
+          $ref: '#/components/schemas/Money'
+        createdAt: { type: string, format: date-time }
+
+    LedgerPage:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntry'
+        nextCursor:
+          type: string
+          description: Present when there are more entries after this page; absent on the last one.
 
     ErrorCode:
       type: string

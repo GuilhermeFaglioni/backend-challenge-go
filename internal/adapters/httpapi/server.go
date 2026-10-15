@@ -31,6 +31,7 @@ var Module = fx.Module("httpapi",
 		func(uc *openwallet.UseCase) WalletOpener { return uc },
 		NewWagering,
 		NewTransactions,
+		NewLedger,
 		func(uc *processwager.UseCase) OperationProcessor { return uc },
 	),
 	fx.Invoke(func(*http.Server) {}),
@@ -49,12 +50,13 @@ type ServerParams struct {
 	Wallets      *Wallets
 	Wagering     *Wagering
 	Transactions *Transactions
+	Ledger       *Ledger
 }
 
 func NewServer(p ServerParams) *http.Server {
 	routes := NewRoutes(p.Authn, p.Logger, p.Metrics)
 	routes.AllowOrigins(p.Config.CORSAllowedOrigins)
-	registerRoutes(routes, p.Health, p.Metrics, p.Wallets, p.Wagering, p.Transactions)
+	registerRoutes(routes, p.Health, p.Metrics, p.Wallets, p.Wagering, p.Transactions, p.Ledger)
 
 	srv := &http.Server{
 		Addr:              p.Config.HTTPAddr,

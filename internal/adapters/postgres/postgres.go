@@ -22,6 +22,7 @@ var Module = fx.Module("postgres",
 		fx.Annotate(NewWalletReader, fx.As(new(application.WalletReader))),
 		fx.Annotate(NewOutboxStore, fx.As(new(application.OutboxStore))),
 		fx.Annotate(NewTransactionReader, fx.As(new(application.TransactionReader))),
+		fx.Annotate(NewLedgerReader, fx.As(new(application.LedgerReader))),
 		fx.Annotate(newReadinessCheck, fx.ResultTags(`group:"readiness"`)),
 	),
 )

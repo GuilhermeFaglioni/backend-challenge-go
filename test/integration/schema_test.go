@@ -630,3 +630,33 @@ func TestTheOutboxIndexesServeThePublisher(t *testing.T) {
 		require.Contains(t, definition, "WHERE (published_at IS NULL)", c.name)
 	}
 }
+
+// --- the ledger's order key --------------------------------------------------------
+
+func TestLedgerEntriesGetAnOrderKeyFromTheDatabase(t *testing.T) {
+	s := newSchema(t)
+	wallet, player := s.wallet(t)
+	first := s.credit(t, wallet, player, 0, 1000, 2)
+	second := s.credit(t, wallet, player, 1000, 500, 3)
+
+	var seq1, seq2 int64
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT seq FROM wallet_ledger_entries WHERE transaction_id = $1`, first).Scan(&seq1))
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT seq FROM wallet_ledger_entries WHERE transaction_id = $1`, second).Scan(&seq2))
+	require.Greater(t, seq2, seq1, "a later entry has a higher key")
+
+	require.NotEmpty(t, s.exec(s.owner, `INSERT INTO wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount_minor, balance_before_minor, balance_after_minor, created_at, seq)
+		VALUES (gen_random_uuid(), $1, $2, 'CREDIT', 1, 0, 1, now(), 1)`, wallet, first), "the key is the database's to give")
+	require.Equal(t, "428C9", s.exec(s.owner, `UPDATE wallet_ledger_entries SET seq = seq + 1`), "or to change")
+}
+
+func TestTheLedgerOrderKeyIsUnique(t *testing.T) {
+	s := newSchema(t)
+	wallet, player := s.wallet(t)
+	s.credit(t, wallet, player, 0, 1000, 2)
+	// Identity columns do not enforce uniqueness by themselves: the constraint does.
+	var constraint string
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT conname FROM pg_constraint WHERE conrelid = 'wallet_ledger_entries'::regclass AND contype = 'u' AND conname = 'wallet_ledger_entries_seq_key'`).Scan(&constraint))
+	var index string
+	require.NoError(t, s.owner.QueryRow(s.ctx, `SELECT indexdef FROM pg_indexes WHERE tablename = 'wallet_ledger_entries' AND indexname = 'wallet_ledger_entries_wallet_seq'`).Scan(&index))
+	require.Contains(t, index, "(wallet_id, seq)")
+}
