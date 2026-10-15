@@ -229,6 +229,17 @@ Constraints:
 
 `event_id UUID PK`, `aggregate_id`, `event_type`, `version`, `payload JSONB` (snapshot imutável), `correlation_id`, `causation_id`, `occurred_at`, `attempts`, `next_attempt_at`, `locked_until`, `published_at`. Índice parcial em `(next_attempt_at) WHERE published_at IS NULL`.
 
+### Estado atual do schema (migrations 000002 a 000005)
+
+| Migration | Conteúdo |
+| --- | --- |
+| `000002_wallets` | `wallets` e o trigger `wallets_version_guard`. Além das regras acima, ele impede que `id`, `player_id` e `currency` mudem. |
+| `000003_wager_transactions` | `wager_transactions` só com a identidade e o resultado; as colunas de tentativa e lease (`attempts`, `next_attempt_at`, `locked_until`, `expires_at`) e o índice de reversão chegam com os tickets que os usam. Constraints: `origin_fields_check` (abertura interna x pedido externo), `wallet_check`, `amount_check` e `failure_code_check` (só `REJECTED` e `FAILED` têm código de falha). Estados terminais são imutáveis por inteiro; `PENDING_REFERENCE` só avança. |
+| `000004_wallet_ledger` | `wallet_ledger_entries`, append-only para todos (trigger para o dono, `REVOKE UPDATE, DELETE, TRUNCATE` para `wagering_app`) e os dois triggers de coerência diferidos. |
+| `000005_outbox` | `outbox` com `payload` obrigatoriamente objeto JSON e o índice parcial dos eventos não publicados (`occurred_at WHERE published_at IS NULL`); colunas de tentativa e lease chegam com o publicador. |
+
+Os triggers de proteção levantam `check_violation` (`23514`), e o do ledger levanta `restrict_violation` (`23001`). Cada constraint e cada trigger tem um teste de integração que tenta violá-lo por SQL direto (`test/integration/schema_test.go`) e que foi visto falhar sem ele. O `.down.sql` do ledger declara que apaga todo o histórico financeiro.
+
 ### Migrations
 
 Arquivos versionados em `migrations/` (`NNNNNN_nome.up.sql` e `NNNNNN_nome.down.sql`).
