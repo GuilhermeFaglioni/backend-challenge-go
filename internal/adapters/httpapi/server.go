@@ -16,6 +16,7 @@ import (
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/openwallet"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/processwager"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
@@ -28,6 +29,8 @@ var Module = fx.Module("httpapi",
 		func(v *auth.Verifier) Authenticator { return v },
 		NewWallets,
 		func(uc *openwallet.UseCase) WalletOpener { return uc },
+		NewWagering,
+		func(uc *processwager.UseCase) OperationProcessor { return uc },
 	),
 	fx.Invoke(func(*http.Server) {}),
 )
@@ -43,12 +46,13 @@ type ServerParams struct {
 	Metrics    *prometheus.Registry
 	Authn      Authenticator
 	Wallets    *Wallets
+	Wagering   *Wagering
 }
 
 func NewServer(p ServerParams) *http.Server {
 	routes := NewRoutes(p.Authn, p.Logger, p.Metrics)
 	routes.AllowOrigins(p.Config.CORSAllowedOrigins)
-	registerRoutes(routes, p.Health, p.Metrics, p.Wallets)
+	registerRoutes(routes, p.Health, p.Metrics, p.Wallets, p.Wagering)
 
 	srv := &http.Server{
 		Addr:              p.Config.HTTPAddr,

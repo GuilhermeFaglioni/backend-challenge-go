@@ -197,11 +197,12 @@ player_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
 open_body="{\"playerId\":\"${player_id}\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}"
 
 # The token is passed through a variable to curl; nothing is echoed.
-api_status() { # <method> <port> <path> <token> [body]
-  local method="$1" port="$2" path="$3" token="$4" body="${5:-}"
+api_status() { # <method> <port> <path> <token> [body] [extra header]
+  local method="$1" port="$2" path="$3" token="$4" body="${5:-}" extra="${6:-}"
   local args=(-sS -o "${SMOKE_BODY}" -w '%{http_code}' -X "$method" "http://localhost:${port}${path}")
   [ -n "$token" ] && args+=(-H "Authorization: Bearer ${token}")
   [ -n "$body" ] && args+=(-H 'Content-Type: application/json' --data "$body")
+  [ -n "$extra" ] && args+=(-H "$extra")
   curl "${args[@]}"
 }
 SMOKE_BODY=$(mktemp)
@@ -249,6 +250,28 @@ status=$(api_status GET "$second_port" "/wallets/${wallet_id}" "$internal_token"
 [ "$status" = "200" ] || fail "GET /wallets/${wallet_id} through :${second_port} answered ${status}"
 [ "$(json_get balance.amount < "$SMOKE_BODY")" = "100.00" ] || fail "the wallet read through :${second_port} does not have 100.00"
 ok "the wallet is readable through another instance (:${second_port}) with its balance"
+
+# A provider's operation: processed on one instance, replayed by another, and refused
+# for a provider that is not the one in the body.
+provider_token=$(json_get access_token <<<"$token_response")
+bet_body="{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-bet-1\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
+status=$(api_status POST "$second_port" /wagering/transactions "$provider_token" "$bet_body" 'Idempotency-Key: smoke-key-1')
+[ "$status" = "200" ] || fail "a bet through :${second_port} answered ${status}: $(cat "$SMOKE_BODY")"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "75.00" ] || fail "the bet left $(json_get balance.amount < "$SMOKE_BODY"), not 75.00"
+[ "$(json_get idempotentReplay < "$SMOKE_BODY")" = "False" ] || fail "the first bet was reported as a replay"
+status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" "$bet_body" 'Idempotency-Key: smoke-key-1')
+[ "$status" = "200" ] || fail "the same bet through :${third_port} answered ${status}"
+[ "$(json_get idempotentReplay < "$SMOKE_BODY")" = "True" ] || fail "the same bet through :${third_port} was not a replay"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "75.00" ] || fail "the replay did not return the original balance"
+ok "a bet was processed through :${second_port} and replayed through :${third_port}, once"
+
+provider_b_response=$(curl -fsS -X POST "${REALM_URL}/protocol/openid-connect/token" \
+  -d grant_type=client_credentials -d client_id=provider-b -d client_secret=provider-b-local-secret) || fail "keycloak refused provider-b"
+status=$(api_status POST "$first_port" /wagering/transactions "$(json_get access_token <<<"$provider_b_response")" "$bet_body" 'Idempotency-Key: smoke-key-2')
+[ "$status" = "403" ] || fail "provider-b acting for provider-a answered ${status}, not 403"
+status=$(api_status POST "$first_port" /wagering/transactions "$internal_token" "$bet_body" 'Idempotency-Key: smoke-key-3')
+[ "$status" = "403" ] || fail "the internal role submitting an operation answered ${status}, not 403"
+ok "an operation for another provider, or from the internal role, is refused (403)"
 
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"

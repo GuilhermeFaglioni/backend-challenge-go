@@ -70,6 +70,7 @@ var allReasons = []auth.Reason{
 	auth.ReasonMissing, auth.ReasonMalformed, auth.ReasonUnsupportedAlgorithm, auth.ReasonUnknownKey,
 	auth.ReasonBadSignature, auth.ReasonExpired, auth.ReasonNotYetValid, auth.ReasonWrongIssuer,
 	auth.ReasonWrongAudience, auth.ReasonInvalidClaims, auth.ReasonKeysUnavailable, auth.ReasonForbidden,
+	auth.ReasonProviderMismatch,
 }
 
 // NewRoutes creates an empty route table. Authentication failures are counted
@@ -173,7 +174,7 @@ func (r *Routes) refuse(ctx context.Context, w http.ResponseWriter, req *http.Re
 		slog.String("path", req.URL.Path),
 	)
 	switch reason {
-	case auth.ReasonForbidden:
+	case auth.ReasonForbidden, auth.ReasonProviderMismatch:
 		writeError(w, http.StatusForbidden, CodeForbidden, "the credentials do not allow this")
 	case auth.ReasonKeysUnavailable:
 		w.Header().Set("Retry-After", retryAfterSeconds)
@@ -210,7 +211,7 @@ func bearerToken(header http.Header) (token string, reason auth.Reason) {
 
 // registerRoutes declares every route of the application. A business endpoint is
 // added here with Protected and the roles that may call it.
-func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wallets *Wallets) {
+func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wallets *Wallets, wagering *Wagering) {
 	r.Public("GET /health/live", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}))
@@ -229,4 +230,5 @@ func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wa
 	}))
 
 	wallets.register(r)
+	wagering.register(r)
 }

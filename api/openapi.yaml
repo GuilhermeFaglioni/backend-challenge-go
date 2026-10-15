@@ -21,6 +21,8 @@ servers:
     description: Instance app-3
 
 tags:
+  - name: Wagering
+    description: Operations sent by game providers. Role `provider`.
   - name: Wallets
     description: Opening and reading wallets. Role `internal`.
   - name: Operations
@@ -30,6 +32,90 @@ security:
   - clientCredentials: []
 
 paths:
+  /wagering/transactions:
+    post:
+      tags: [Wagering]
+      operationId: submitOperation
+      summary: Submit an operation
+      description: |
+        Processes an operation of a game provider on a player's wallet. Role `provider`.
+
+        The provider is the one the token says it is: `providerId` in the body must be
+        the token's, otherwise the request is refused with `403` before anything
+        happens. A provider never reads or replays another provider's operations.
+
+        `Idempotency-Key` is required and is kept exactly as received. Sending the same
+        key and content again answers with the stored result and `idempotentReplay: true`,
+        with the balance seen when the operation was first processed. The same key with
+        other content is `409 IDEMPOTENCY_KEY_CONFLICT`; the same `externalTransactionId`
+        under another key is `409 DUPLICATE_EXTERNAL_TRANSACTION`, and nothing is applied.
+
+        A business refusal (insufficient funds, a wallet that does not exist, a player or
+        currency that does not match) is a stored, final result: `422` with a
+        `failureCode`. Sending it again returns the same `422`; to correct it, send a new
+        operation with a new key and external id.
+
+        Only `BET` is processed so far: the other kinds are answered `400` until they are
+        delivered. `OPENING` is reserved to the internal opening of a wallet and is always
+        `400`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationRequest'
+            examples:
+              bet:
+                summary: A bet of 25.00 BRL
+                value:
+                  providerId: provider-a
+                  externalTransactionId: transaction-123
+                  playerId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  walletId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  roundId: round-987
+                  gameId: fortune-chimp
+                  kind: BET
+                  money: { amount: '25.00', currency: BRL }
+      responses:
+        '200':
+          description: The operation was processed.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessedOperation'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: |
+            The idempotency key was used with other content (`IDEMPOTENCY_KEY_CONFLICT`),
+            or the external transaction id was used under another key
+            (`DUPLICATE_EXTERNAL_TRANSACTION`). Nothing was applied.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: A business rule refused the operation. The refusal is stored and final.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectedOperation'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /wallets:
     post:
       tags: [Wallets]
@@ -208,6 +294,15 @@ components:
           scopes: {}
 
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Identifies the operation. 1 to 255 printable ASCII characters without spaces.
+        It may be built as `{providerId}:{externalTransactionId}`; the server keeps the
+        one it receives and never replaces it.
+      schema: { type: string, pattern: '^[!-~]{1,255}$' }
     CorrelationId:
       name: X-Correlation-Id
       in: header
@@ -264,6 +359,76 @@ components:
           minimum: 1
           description: Starts at 1 and rises by one with each change of the balance.
 
+    OperationRequest:
+      type: object
+      required: [providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money]
+      additionalProperties: false
+      properties:
+        providerId:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,62}$'
+          description: Must be the provider the token belongs to.
+        externalTransactionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        playerId: { type: string, format: uuid }
+        walletId: { type: string, format: uuid }
+        roundId: { type: string, minLength: 1, maxLength: 128 }
+        gameId: { type: string, minLength: 1, maxLength: 128 }
+        kind:
+          type: string
+          enum: [BET, WIN, LOSS, REFUND, ROLLBACK]
+          description: |
+            `BET` debits. `WIN` credits. `LOSS` moves nothing and needs `0.00`. `REFUND` and
+            `ROLLBACK` reverse an earlier operation and need `referenceExternalTransactionId`.
+            `OPENING` is not accepted.
+        money:
+          $ref: '#/components/schemas/Money'
+        referenceExternalTransactionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Required for `REFUND` and `ROLLBACK`, optional for `WIN`, not allowed otherwise.
+
+    ProcessedOperation:
+      type: object
+      required: [transactionId, status, balance, idempotentReplay]
+      properties:
+        transactionId: { type: string, format: uuid }
+        status: { type: string, enum: [PROCESSED] }
+        balance:
+          $ref: '#/components/schemas/Money'
+        idempotentReplay:
+          type: boolean
+          description: True when the stored result of an earlier identical request is being returned.
+
+    RejectedOperation:
+      type: object
+      required: [transactionId, status, failureCode, idempotentReplay]
+      properties:
+        transactionId: { type: string, format: uuid }
+        status: { type: string, enum: [REJECTED] }
+        failureCode:
+          type: string
+          description: |
+            Why the operation was refused. Correctable (`CURRENCY_MISMATCH`, `PLAYER_MISMATCH`,
+            `REFERENCE_KIND_INVALID`, `REFERENCE_MISMATCH`, `REFERENCE_AMOUNT_MISMATCH`): the data
+            sent is at fault. Definitive: a business result that sending again does not change.
+          enum:
+            - INSUFFICIENT_FUNDS
+            - REVERSAL_INSUFFICIENT_FUNDS
+            - WALLET_NOT_FOUND
+            - CURRENCY_MISMATCH
+            - PLAYER_MISMATCH
+            - REFERENCE_NOT_FOUND
+            - REFERENCE_NOT_PROCESSED
+            - REFERENCE_KIND_INVALID
+            - REFERENCE_MISMATCH
+            - REFERENCE_AMOUNT_MISMATCH
+            - REFERENCE_ALREADY_REVERSED
+        idempotentReplay: { type: boolean }
+
     ErrorCode:
       type: string
       enum:
@@ -272,6 +437,8 @@ components:
         - FORBIDDEN
         - NOT_FOUND
         - WALLET_ALREADY_EXISTS
+        - IDEMPOTENCY_KEY_CONFLICT
+        - DUPLICATE_EXTERNAL_TRANSACTION
         - UNAVAILABLE
         - INTERNAL_ERROR
 

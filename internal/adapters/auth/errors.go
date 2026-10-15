@@ -28,6 +28,9 @@ const (
 	ReasonKeysUnavailable Reason = "keys_unavailable"
 	// ReasonForbidden is recorded by the HTTP layer: authenticated, wrong role.
 	ReasonForbidden Reason = "forbidden_role"
+	// ReasonProviderMismatch is recorded by the HTTP layer: authenticated as a
+	// provider, but acting for another one.
+	ReasonProviderMismatch Reason = "provider_mismatch"
 )
 
 // Error is an authentication failure. Its text names only the reason; the

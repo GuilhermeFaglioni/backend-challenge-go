@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -25,6 +26,10 @@ func markTransient(err error) error {
 
 func isTransient(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, application.ErrConcurrentUpdate) {
+		return true
+	}
+	// A connection that dropped in the middle of an exchange: the other side is gone.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	var connectErr *pgconn.ConnectError

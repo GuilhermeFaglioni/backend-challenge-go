@@ -13,8 +13,12 @@ const (
 	CodeForbidden           = "FORBIDDEN"
 	CodeNotFound            = "NOT_FOUND"
 	CodeWalletAlreadyExists = "WALLET_ALREADY_EXISTS"
-	CodeUnavailable         = "UNAVAILABLE"
-	CodeInternal            = "INTERNAL_ERROR"
+	// CodeIdempotencyKeyConflict: the key was used with other content.
+	CodeIdempotencyKeyConflict = "IDEMPOTENCY_KEY_CONFLICT"
+	// CodeDuplicateExternalTransaction: the external id was used under another key.
+	CodeDuplicateExternalTransaction = "DUPLICATE_EXTERNAL_TRANSACTION"
+	CodeUnavailable                  = "UNAVAILABLE"
+	CodeInternal                     = "INTERNAL_ERROR"
 )
 
 // errorBody is the shape of every error response:
