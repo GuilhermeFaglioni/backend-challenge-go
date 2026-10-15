@@ -359,6 +359,38 @@ func (k *Keycloak) TokenAt(ctx context.Context, realmURL, clientID, secret strin
 	return body.AccessToken, nil
 }
 
+// Metrics client of the realm import: the only role that may read /metrics.
+const (
+	MetricsClientID = "metrics-scraper"
+	MetricsSecret   = "metrics-scraper-local-secret" //nolint:gosec // local test credential, also in deploy/keycloak
+)
+
+// Scrape reads an instance's /metrics as the metrics scraper and returns the text.
+func (k *Keycloak) Scrape(ctx context.Context, base string) (string, error) {
+	token, err := k.Token(ctx, MetricsClientID, MetricsSecret)
+	if err != nil {
+		return "", fmt.Errorf("metrics token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/metrics", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	text, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("scrape %s: status %d", base, resp.StatusCode)
+	}
+	return string(text), nil
+}
+
 // --- diagnostics -----------------------------------------------------------
 
 // DumpLogs writes a container's logs to <dir>/<name>.log. Used on failure so CI

@@ -90,7 +90,7 @@ Princípios que guiam as decisões:
 | Validação de token | `go-jose` v4 (JWS e `jwt`), com cache próprio das chaves | Valida assinatura, algoritmo, `iss`, `aud`, `exp` e `nbf` localmente. Não usamos o `go-oidc` porque seu `RemoteKeySet` busca as chaves de novo a cada `kid` desconhecido, sem limite (o que deixaria qualquer um forçar uma requisição ao Keycloak por token), e embrulha os erros de assinatura como texto, o que impede classificar a falha por motivo. |
 | IDs | UUIDv7 (`google/uuid`) | Ordenável no tempo; ajuda na paginação por cursor. |
 | Logs | `log/slog` (JSON) | Biblioteca padrão. |
-| Métricas | `prometheus/client_golang` | Contadores, histogramas e gauges em `/metrics`. |
+| Métricas | `prometheus/client_golang` | Contadores, histogramas e gauges em `/metrics` (papel `monitoring`). |
 | Configuração | Variáveis de ambiente (`caarlos0/env`) | Validada no boot; `.env.example` versionado. |
 | Testes | `testing`, `testify`, `testcontainers-go` | Infraestrutura real (Postgres, Keycloak, LocalStack). |
 | Documentação da API | OpenAPI 3.0.3 escrito à mão, Swagger UI, `kin-openapi` | Contrato definido antes dos handlers e validado por teste. Ver [seção 11](#11-contrato-http-códigos-e-failurecode). |
@@ -650,7 +650,7 @@ Envelope:
 
 ## 13. Autenticação e autorização
 
-**IdP:** Keycloak, em container no Compose, com realm importado automaticamente (`deploy/keycloak/realm.json`) contendo os clients de teste: `provider-a`, `provider-b` e `internal-service`. A aplicação não armazena senhas nem emite tokens.
+**IdP:** Keycloak, em container no Compose, com realm importado automaticamente (`deploy/keycloak/wagering-realm.json`) contendo os clients de teste: `provider-a`, `provider-b`, `internal-service` e `metrics-scraper`. A aplicação não armazena senhas nem emite tokens.
 
 **Fluxo:** o cliente obtém um JWT via `client_credentials` e chama a API com `Authorization: Bearer`. A API valida localmente, com as chaves públicas em cache (JWKS), sem chamar o Keycloak por requisição.
 
@@ -670,12 +670,12 @@ Se uma renovação falha, a próxima é liberada depois de 5s (não 30s), e enqu
 
 **Respostas:** `401` (`UNAUTHENTICATED`, `WWW-Authenticate: Bearer`) para credencial ausente, malformada ou inválida, sempre com o mesmo corpo para não ensinar nada a quem sonda; `403` (`FORBIDDEN`) para credencial válida com papel insuficiente; `503` (`UNAVAILABLE`, `Retry-After: 5`) quando não foi possível verificar por o Keycloak estar fora do ar.
 
-**Registro de rotas:** toda rota passa por `httpapi.Routes`, que é dono do roteador. Uma rota é pública só se estiver na lista explícita (`/health/live`, `/health/ready`, `/metrics`, `/openapi.yaml`); qualquer outra é registrada com `Protected` e **precisa declarar os papéis** que podem chamá-la (sem papel, com papel desconhecido ou sem handler, o registro falha na composição). Um teste de AST reprova o build se algum outro arquivo do pacote criar um roteador, registrar no roteador padrão, iniciar outro servidor (`ListenAndServe`, `http.Serve`) ou montar um `http.Server` que não seja o de `server.go` servindo `Routes.Handler()`. A garantia de que cada rota é pública da lista ou protegida por papel é do próprio registro, que falha na composição.
+**Registro de rotas:** toda rota passa por `httpapi.Routes`, que é dono do roteador. Uma rota é pública só se estiver na lista explícita (`/health/live`, `/health/ready`, `/openapi.yaml`); qualquer outra é registrada com `Protected` e **precisa declarar os papéis** que podem chamá-la (sem papel, com papel desconhecido ou sem handler, o registro falha na composição). Um teste de AST reprova o build se algum outro arquivo do pacote criar um roteador, registrar no roteador padrão, iniciar outro servidor (`ListenAndServe`, `http.Serve`) ou montar um `http.Server` que não seja o de `server.go` servindo `Routes.Handler()`. A garantia de que cada rota é pública da lista ou protegida por papel é do próprio registro, que falha na composição.
 
 **Identidade e papéis:**
 
 - O `providerId` autorizado vem da claim `provider_id`, configurada no Keycloak por um mapper fixo em cada client de provedor. **Nunca** vem do corpo da requisição.
-- Papéis (client roles): `provider` e `internal`.
+- Papéis (client roles): `provider`, `internal` e `monitoring`.
 
 | Endpoint | Papel | Regra |
 | --- | --- | --- |
@@ -685,7 +685,7 @@ Se uma renovação falha, a próxima é liberada depois de 5s (não 30s), e enqu
 | `POST /wallets`, `GET /wallets/:id`, `GET /wallets/:id/ledger`, `POST /wallets/:id/reconciliation` | `internal` | operações de carteira restritas ao serviço interno |
 | `GET /health/live`, `GET /health/ready` | público | |
 | `GET /openapi.yaml` | público | só o contrato; não expõe dados |
-| `/metrics` | público na rede interna do Compose | ver limitações |
+| `GET /metrics` | `monitoring` | só o cliente `metrics-scraper`: as métricas descrevem o tráfego e os livros de todas as carteiras, então nem os provedores nem o serviço interno as leem. Um Prometheus obtém o token com a configuração `oauth2` do `scrape_config` (README) |
 
 A autorização acontece **antes** de qualquer efeito: um acesso negado não grava transação, não toca a carteira e não expõe dados. O isolamento vale também para replays (a busca por chave de idempotência filtra por `provider_id`).
 
@@ -772,7 +772,6 @@ Limitações conhecidas:
 - O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms quando não há nada a fazer); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
 - **Vazão da outbox por carteira:** para garantir a ordem, o evento seguinte de uma carteira só é enviado depois de o anterior ser aceito, então uma carteira é publicada a cerca de 150 eventos/s (medido; o limite é a latência de uma chamada ao SQS). Uma carteira que gere eventos mais rápido do que isso (cada operação gera dois, então acima de ~75 operações/s numa só carteira) acumula fila e atraso enquanto durar a carga; nada se perde e a ordem se mantém (ver [docs/LOAD_TEST.md](docs/LOAD_TEST.md)).
 - Cada tentativa do worker é uma transação por operação; um lote grande de esperas na mesma carteira é resolvido em série (o lock da carteira serializa de qualquer modo).
-- `/metrics` sem autenticação (assume rede interna).
 - As políticas IAM do SQS são provisionadas e verificadas contra o código, mas o LocalStack gratuito não as aplica; só na AWS elas barram uma chamada (seção 13).
 - Autenticação: o emissor e o JWKS podem ser `http` (necessário no Compose local; em produção devem ser `https`); não há limite para o tempo de vida do token além do `exp` que o IdP emite; cada requisição recusada gera uma linha de log `Info` (um sondador barulhento enche o log, mas não o contador, que tem rótulos fixos); o prazo de início do Fx usa o mesmo valor do shutdown (`SHUTDOWN_TIMEOUT`), e é ele que limita a espera pelo Keycloak.
 - Eventos de saída são at-least-once; consumidores precisam deduplicar por `eventId`.
