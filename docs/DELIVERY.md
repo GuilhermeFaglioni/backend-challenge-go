@@ -67,11 +67,12 @@ Cada cenário termina conferindo o saldo armazenado contra créditos menos débi
 
 | Camada | Comando | Tamanho |
 | --- | --- | ---: |
-| Unitários | `go test -race ./...` | 464 testes; domínio com 96,9% a 98,2% de cobertura só nesta camada |
+| Unitários | `go test -race ./...` | 471 testes; domínio com 96,9% a 98,2% de cobertura só nesta camada |
 | Integração (Docker) | `go test -tags integration -race -count=1 -shuffle=on ./test/...` | 174 testes, cerca de 2m20s |
 | Multi-instância e falhas (Docker) | `go test -tags multiinstance -race -count=1 -shuffle=on ./test/multiinstance/` | 24 testes, 3m12s |
 | Qualidade | `gofmt -l .`, `go vet ./...` (e com cada tag), `golangci-lint run ./...` | sem achados |
 | Ambiente completo | `bash .github/scripts/smoke.sh` | o mesmo do CI |
+| Carga (opcional, Compose de pé) | `make loadtest` | ver [LOAD_TEST.md](LOAD_TEST.md) |
 
 O CI roda tudo isso, mais a cobertura combinada das três camadas (gate de 90% por pacote do domínio), vulnerabilidades e a construção da imagem multi-arquitetura.
 
@@ -79,8 +80,8 @@ O CI roda tudo isso, mais a cobertura combinada das três camadas (gate de 90% p
 
 O texto completo está em ARCHITECTURE §17. Em resumo:
 
-- Não foi feito o teste de carga (opcional): não há números de throughput nem de latência. Também ficaram de fora partidas dobradas, tracing e dashboards.
-- A inbox e a outbox não têm política de retenção.
+- O teste de carga (opcional) foi feito e está em [LOAD_TEST.md](LOAD_TEST.md), com a ressalva de que mede ordens de grandeza num notebook e de que uma carteira só é publicada na outbox a ~20 eventos/s. Ficaram de fora partidas dobradas, tracing e dashboards.
+- A inbox e a outbox não têm política de retenção, e a outbox publica no máximo ~20 eventos/s por carteira.
 - A reconciliação soma o ledger inteiro; o custo cresce com o número de lançamentos.
 - O estado `FAILED` existe, mas nenhum caminho o produz hoje.
 - `/metrics` não é autenticado; os tokens locais usam `http`.

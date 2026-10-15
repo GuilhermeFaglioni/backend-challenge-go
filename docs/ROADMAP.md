@@ -33,7 +33,7 @@ Vale para todo ticket; as issues apontam para cá em vez de repetir.
 
 ## Tickets
 
-> **Situação:** R1 a R21 foram entregues (cada um em um PR com os checks verdes e as mutações descritas). R22, o teste de carga, é opcional e não foi feito. A evidência de cada critério e o resultado dos oito cenários estão em [DELIVERY.md](DELIVERY.md).
+> **Situação:** R1 a R21 foram entregues (cada um em um PR com os checks verdes e as mutações descritas). R22, o teste de carga (opcional), foi feito: [LOAD_TEST.md](LOAD_TEST.md). A evidência de cada critério e o resultado dos oito cenários estão em [DELIVERY.md](DELIVERY.md).
 
 | Ticket | Entrega | Bloqueado por |
 | --- | --- | --- |

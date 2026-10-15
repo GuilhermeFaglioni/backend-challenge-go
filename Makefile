@@ -1,4 +1,4 @@
-.PHONY: up down deps run build test test-race vet fmt migrate-up migrate-down
+.PHONY: up down deps run build test test-race vet fmt migrate-up migrate-down loadtest
 
 N ?= 1
 
@@ -37,3 +37,6 @@ migrate-up:
 
 migrate-down: ## Revert the last N migrations (default 1): make migrate-down N=2
 	$(MIGRATE) down $(N)
+
+loadtest: ## Load test of the running Compose environment (docs/LOAD_TEST.md)
+	bash test/load/run.sh
