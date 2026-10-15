@@ -47,12 +47,37 @@ type SQS struct {
 	EventsQueue string `env:"EVENTS_QUEUE" envDefault:"wager-events.fifo"`
 	// DeadLetterQueue is where the consumer sends the messages it can never handle
 	// (the queue's own redrive sends the ones whose attempts ran out).
-	DeadLetterQueue string   `env:"DEAD_LETTER_QUEUE" envDefault:"wager-transactions-dlq.fifo"`
-	Consumer        Consumer `envPrefix:"CONSUMER_"`
+	DeadLetterQueue string    `env:"DEAD_LETTER_QUEUE" envDefault:"wager-transactions-dlq.fifo"`
+	Consumer        Consumer  `envPrefix:"CONSUMER_"`
+	Publisher       Publisher `envPrefix:"PUBLISHER_"`
+}
+
+// Credentials are an access key of its own for one component. Empty, the SDK's default
+// chain is used (the environment, a profile, the role of the machine or of the pod),
+// which is what a deployment on AWS normally wants; set, they let each component hold a
+// key whose policy allows it only what it does (deploy/aws/iam).
+type Credentials struct {
+	AccessKeyID     string `env:"ACCESS_KEY_ID"`
+	SecretAccessKey string `env:"SECRET_ACCESS_KEY"`
+}
+
+func (c Credentials) validate(prefix string) []error {
+	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
+		return []error{fmt.Errorf("%sACCESS_KEY_ID and %sSECRET_ACCESS_KEY go together: set both or neither", prefix, prefix)}
+	}
+	return nil
+}
+
+// Publisher is the outbox publisher's access to the events queue.
+type Publisher struct {
+	Credentials
 }
 
 // Consumer tunes the loop that reads the input queue.
 type Consumer struct {
+	// Credentials are the consumer's own access to the input queue and the dead-letter
+	// queue.
+	Credentials
 	// Workers is how many receive loops run in each instance.
 	Workers int `env:"WORKERS" envDefault:"4"`
 	// BatchSize is how many messages one receive asks for (SQS allows 1 to 10).
@@ -175,6 +200,8 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("OUTBOX_LEASE must be at least 1s"))
 	}
 	errs = append(errs, c.SQS.Consumer.validate()...)
+	errs = append(errs, c.SQS.Consumer.Credentials.validate("SQS_CONSUMER_")...)
+	errs = append(errs, c.SQS.Publisher.validate("SQS_PUBLISHER_")...)
 	errs = append(errs, c.PendingReference.validate()...)
 	for _, origin := range c.CORSAllowedOrigins {
 		if err := validateOrigin(origin); err != nil {

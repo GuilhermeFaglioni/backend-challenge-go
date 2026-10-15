@@ -63,6 +63,12 @@ func TestValidate(t *testing.T) {
 		{name: "no pending poll interval", mutate: func(c *Config) { c.PendingReference.PollInterval = 0 }, wantErr: "PENDING_REFERENCE_POLL_INTERVAL"},
 		{name: "no pending batch", mutate: func(c *Config) { c.PendingReference.BatchSize = 0 }, wantErr: "PENDING_REFERENCE_BATCH_SIZE"},
 		{name: "pending lease too short", mutate: func(c *Config) { c.PendingReference.Lease = 500 * time.Millisecond }, wantErr: "PENDING_REFERENCE_LEASE"},
+		{name: "consumer key without its secret", mutate: func(c *Config) { c.SQS.Consumer.AccessKeyID = "k" }, wantErr: "SQS_CONSUMER_ACCESS_KEY_ID"},
+		{name: "publisher secret without its key", mutate: func(c *Config) { c.SQS.Publisher.SecretAccessKey = "s" }, wantErr: "SQS_PUBLISHER_ACCESS_KEY_ID"},
+		{name: "both components with keys", mutate: func(c *Config) {
+			c.SQS.Consumer.Credentials = Credentials{AccessKeyID: "a", SecretAccessKey: "b"}
+			c.SQS.Publisher.Credentials = Credentials{AccessKeyID: "c", SecretAccessKey: "d"}
+		}},
 		{name: "relative issuer", mutate: func(c *Config) { c.OIDC.IssuerURL = "/realms/wagering" }, wantErr: "OIDC_ISSUER_URL"},
 		{name: "bad aws endpoint", mutate: func(c *Config) { c.AWS.EndpointURL = "localhost:4566" }, wantErr: "AWS_ENDPOINT_URL"},
 		{name: "empty audience", mutate: func(c *Config) { c.OIDC.Audience = "" }, wantErr: "OIDC_AUDIENCE"},
@@ -224,5 +230,22 @@ func TestPendingReferenceDefaultsAndEnvironment(t *testing.T) {
 	want := PendingReference{MaxAttempts: 3, TTL: 2 * time.Minute, BackoffBase: time.Second, BackoffMax: 5 * time.Second, PollInterval: 100 * time.Millisecond, BatchSize: 4, Lease: 3 * time.Second}
 	if cfg.PendingReference != want {
 		t.Fatalf("got %+v, want %+v", cfg.PendingReference, want)
+	}
+}
+
+func TestComponentCredentialsComeFromTheEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	t.Setenv("SQS_CONSUMER_ACCESS_KEY_ID", "ck")
+	t.Setenv("SQS_CONSUMER_SECRET_ACCESS_KEY", "cs")
+	t.Setenv("SQS_PUBLISHER_ACCESS_KEY_ID", "pk")
+	t.Setenv("SQS_PUBLISHER_SECRET_ACCESS_KEY", "ps")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQS.Consumer.Credentials != (Credentials{AccessKeyID: "ck", SecretAccessKey: "cs"}) || cfg.SQS.Publisher.Credentials != (Credentials{AccessKeyID: "pk", SecretAccessKey: "ps"}) {
+		t.Fatalf("got %+v %+v", cfg.SQS.Consumer.Credentials, cfg.SQS.Publisher.Credentials)
 	}
 }

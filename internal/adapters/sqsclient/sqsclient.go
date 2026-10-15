@@ -1,5 +1,10 @@
-// Package sqsclient builds the AWS SQS client shared by the consumer and the
-// outbox publisher. Locally it points at LocalStack through AWS_ENDPOINT_URL.
+// Package sqsclient builds the AWS SQS clients of the consumer and of the outbox
+// publisher. Locally they point at LocalStack through AWS_ENDPOINT_URL.
+//
+// There are two clients, one per component, so that each can hold credentials of its own,
+// with a policy that allows it only what it does (deploy/aws/iam): the consumer reads the
+// input queue and writes the dead-letter queue, the publisher writes the events queue.
+// Without credentials of its own a client uses the SDK's default chain.
 package sqsclient
 
 import (
@@ -11,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"go.uber.org/fx"
 
@@ -25,25 +31,31 @@ var Module = fx.Module("sqsclient",
 	),
 )
 
-// New builds the client. Credentials come from the SDK default chain
-// (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY locally).
+// Consumer is the client of the queue consumer.
+type Consumer struct{ *sqs.Client }
+
+// Publisher is the client of the outbox publisher.
+type Publisher struct{ *sqs.Client }
+
+// New builds the two clients.
 //
 // The HTTP transport is created here, not by the SDK, because it keeps idle
 // connections (and their goroutines) open and must be closed on stop so that
 // nothing outlives the application. The SDK's own client hides its transport
 // (BuildableClient.GetTransport returns a copy), so it cannot be closed. The
 // transport starts from the SDK's defaults (connection pool size, TLS minimum,
-// timeouts) rather than from net/http's.
-func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*sqs.Client, error) {
+// timeouts) rather than from net/http's. Both clients share it.
+func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (Consumer, Publisher, error) {
 	transport := awshttp.NewBuildableClient().GetTransport()
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(cfg.AWS.Region),
-		// No client-level timeout: SQS long polling holds requests open, and
-		// callers bound every call with a context deadline.
-		awsconfig.WithHTTPClient(&http.Client{Transport: transport}),
-	)
+	httpClient := &http.Client{Transport: transport} // no client-level timeout: long polling holds requests open, and callers bound every call with a context deadline
+
+	consumer, err := newClient(cfg, httpClient, cfg.SQS.Consumer.Credentials)
 	if err != nil {
-		return nil, fmt.Errorf("load aws config: %w", err)
+		return Consumer{}, Publisher{}, fmt.Errorf("the consumer's sqs client: %w", err)
+	}
+	publisher, err := newClient(cfg, httpClient, cfg.SQS.Publisher.Credentials)
+	if err != nil {
+		return Consumer{}, Publisher{}, fmt.Errorf("the publisher's sqs client: %w", err)
 	}
 
 	lc.Append(fx.Hook{
@@ -53,7 +65,21 @@ func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*sqs.Client, err
 			return nil
 		},
 	})
+	return Consumer{consumer}, Publisher{publisher}, nil
+}
 
+func newClient(cfg config.Config, httpClient *http.Client, own config.Credentials) (*sqs.Client, error) {
+	options := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(cfg.AWS.Region),
+		awsconfig.WithHTTPClient(httpClient),
+	}
+	if own.AccessKeyID != "" {
+		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(own.AccessKeyID, own.SecretAccessKey, "")))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), options...)
+	if err != nil {
+		return nil, fmt.Errorf("load aws config: %w", err)
+	}
 	return sqs.NewFromConfig(awsCfg, func(o *sqs.Options) {
 		if cfg.AWS.EndpointURL != "" {
 			o.BaseEndpoint = aws.String(cfg.AWS.EndpointURL)
@@ -61,8 +87,9 @@ func New(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*sqs.Client, err
 	}), nil
 }
 
-// newReadinessCheck reports SQS as ready when the input queue is resolvable.
-func newReadinessCheck(client *sqs.Client, cfg config.Config) health.Check {
+// newReadinessCheck reports SQS as ready when the input queue is resolvable, with the
+// consumer's own access.
+func newReadinessCheck(client Consumer, cfg config.Config) health.Check {
 	return health.Check{
 		Name: "sqs",
 		Fn: func(ctx context.Context) error {

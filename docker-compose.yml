@@ -24,8 +24,12 @@ x-app: &app
     DATABASE_MAX_CONNS: "10"
     AWS_REGION: us-east-1
     AWS_ENDPOINT_URL: http://localstack:4566
-    AWS_ACCESS_KEY_ID: test
-    AWS_SECRET_ACCESS_KEY: test
+    # One access key per component, each meant for the policy in deploy/aws/iam. LocalStack
+    # accepts any key and does not enforce the policies; on AWS these would be the roles.
+    SQS_CONSUMER_ACCESS_KEY_ID: wagering-consumer-local
+    SQS_CONSUMER_SECRET_ACCESS_KEY: local-only-not-a-secret
+    SQS_PUBLISHER_ACCESS_KEY_ID: wagering-publisher-local
+    SQS_PUBLISHER_SECRET_ACCESS_KEY: local-only-not-a-secret
     SQS_INPUT_QUEUE: wager-transactions.fifo
     SQS_EVENTS_QUEUE: wager-events.fifo
     SQS_DEAD_LETTER_QUEUE: wager-transactions-dlq.fifo
@@ -73,15 +77,16 @@ services:
   localstack:
     image: localstack/localstack:3.8.1
     environment:
-      SERVICES: sqs
+      SERVICES: sqs,iam
       AWS_DEFAULT_REGION: us-east-1
     ports:
       - "${LOCALSTACK_PORT:-4566}:4566"
     volumes:
       - ./deploy/localstack/init:/etc/localstack/init/ready.d:ro
+      - ./deploy/aws/iam:/etc/wagering/iam:ro
     healthcheck:
-      # Ready once the init script has created the last queue.
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events.fifo"]
+      # Ready once the init scripts have created the last queue and the last policy.
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events.fifo && awslocal iam list-attached-user-policies --user-name wagering-publisher --query 'AttachedPolicies[0].PolicyName' --output text | grep -q wagering-publisher-sqs"]
       interval: 3s
       timeout: 5s
       retries: 40

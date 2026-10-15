@@ -52,7 +52,8 @@ func startConsumerAPIWith(t *testing.T, configure func(*config.Config)) *consume
 	a := startWalletAPIWith(t, func(c *config.Config) {
 		c.SQS.InputQueue, c.SQS.DeadLetterQueue = queues.InputName, queues.DLQName
 		c.SQS.Consumer = config.Consumer{
-			Workers: 2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 2 * time.Second,
+			Credentials: c.SQS.Consumer.Credentials,
+			Workers:     2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 2 * time.Second,
 			RetryBackoffBase: time.Second, RetryBackoffMax: 2 * time.Second,
 		}
 		if configure != nil {

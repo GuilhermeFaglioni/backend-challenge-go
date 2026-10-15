@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsclient"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/processwager"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 )
@@ -24,7 +24,7 @@ var Module = fx.Module("sqsconsumer",
 
 // NewFromConfig builds the consumer from the configuration and ties it to the Fx
 // lifecycle. The consumer is named after the input queue in the inbox.
-func NewFromConfig(lc fx.Lifecycle, cfg config.Config, client *sqs.Client, uc *processwager.UseCase, log *slog.Logger, reg *prometheus.Registry) *Consumer {
+func NewFromConfig(lc fx.Lifecycle, cfg config.Config, client sqsclient.Consumer, uc *processwager.UseCase, log *slog.Logger, reg *prometheus.Registry) *Consumer {
 	c := New(client, uc, Options{
 		Name:              cfg.SQS.InputQueue,
 		InputQueue:        cfg.SQS.InputQueue,
