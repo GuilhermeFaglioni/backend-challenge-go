@@ -702,7 +702,7 @@ A autorização acontece **antes** de qualquer efeito: um acesso negado não gra
 | `sqsconsumer` | consumidor | inicia o loop de polling | para de buscar e aguarda o trabalho em andamento |
 | `outbox`, `pendingref` | workers | iniciam goroutines com contexto cancelável | cancelam o contexto e aguardam o `WaitGroup` |
 
-**Shutdown (SIGTERM):** o Fx executa os `OnStop` na ordem inversa de registro. Sequência pretendida:
+**Shutdown (SIGTERM):** o Fx executa os `OnStop` na ordem inversa de registro (`httpapi` por último, então para primeiro; depois `pendingref`, `sqsconsumer` e `outbox`; só então o cliente SQS e o pool). Sequência implementada, e coberta pelos testes de encerramento (integração com `goleak`, e multi-instância com `SIGTERM` no consumidor):
 
 1. `/health/ready` passa a falhar (a instância sai do balanceamento).
 2. O servidor HTTP para de aceitar conexões novas e conclui as requisições em andamento (`Shutdown`).
@@ -720,7 +720,7 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
   - Referências pendentes: `pending_reference_resolutions_total{outcome}` (cada tentativa do worker: `processed`, `rejected`, `waiting`, `expired`, `discarded`; `waiting` são as retentativas e `expired` as expirações), `pending_references` (quantas esperam agora) e `pending_reference_oldest_age_seconds` (há quanto tempo espera a mais antiga). Operações aceitas em espera aparecem em `wager_requests_total{outcome="pending"}`.
   - Consumidor SQS: `sqs_messages_received_total` (cada recebimento, inclusive o de uma mensagem entregue de novo), `sqs_messages_handled_total{result}` (`handled`, `duplicate`, `retried`, `dead_lettered`, `released`) e `sqs_dead_letters_total{reason}` (`malformed`, `unknown_type`, `invalid`, `key_conflict`, `duplicate_external`, `message_conflict`). As duplicatas por mensagem entram em `wager_duplicates_total{type="message"}` e `{type="message_conflict"}`.
 - **Health:** `GET /health/live` (processo) e `GET /health/ready` (Postgres e SQS).
-- **Opcionais:** tracing com OpenTelemetry fica como diferencial, se houver tempo.
+- **Opcionais:** tracing com OpenTelemetry e dashboards não foram feitos (seção 17).
 
 ## 16. Estratégia de testes
 
@@ -729,11 +729,13 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
 - **Invariantes do schema, por SQL direto:** testes que tentam burlar a aplicação e precisam ser recusados pelo banco: alterar saldo sem lançamento, inserir lançamento órfão, lançamento cujo `balance_before` não encadeia, pular ou repetir versão, saldo negativo, `UPDATE`/`DELETE`/`TRUNCATE` no ledger, segundo `OPENING` na mesma carteira, segunda reversão processada da mesma referência e transição a partir de estado terminal.
 - **Concorrência e recuperação:** os oito cenários exigidos (50 envios paralelos, 2×80 em 100, carteiras distintas, três instâncias independentes, crash entre commit e ack, dois publishers, referência tardia ou expirada, reinício), com conferência final entre saldo e a soma do ledger e cenários que cruzam HTTP e SQS.
 - **Três processos independentes:** os cenários multi-instância usam o binário da aplicação executado como três processos do sistema operacional (réplicas do Compose, ou processos iniciados pelo próprio teste), cada um com seu pool de conexões e sua memória. Instâncias Fx dentro do processo de teste não contam como independentes.
-- **Injeção de falhas:** pontos de falha nomeados no código (por exemplo `after_commit_before_ack`, `after_publish_before_mark`, `after_pending_commit`), compilados só com a build tag `faultinject` e ativados por variável de ambiente. Quando ativado, o ponto encerra o processo com `os.Exit`, simulando um crash abrupto. Os testes de recuperação sobem um processo com o ponto ativo, esperam o crash e verificam que outra instância conclui o trabalho.
+- **Injeção de falhas:** pontos de falha nomeados no código (`outbox_after_reserve`, `outbox_after_publish`, `consumer_after_commit`, `pending_after_commit`, `pending_after_reserve`, mais os dois do início do servidor), compilados só com a build tag `faultinject` e ativados por variável de ambiente. Quando ativado, o ponto encerra o processo com `os.Exit`, simulando um crash abrupto. Os testes de recuperação sobem um processo com o ponto ativo, esperam o crash e verificam que outra instância conclui o trabalho.
 - **Duplicidade exercitando a aplicação:** nos testes de reenvio pelo SQS, cada cópia da mensagem é enviada com um `MessageDeduplicationId` diferente, para que a deduplicação do FIFO não descarte as cópias. Assim o teste prova que a inbox e a idempotência barram a duplicata, e as métricas de duplicata confirmam os recebimentos repetidos.
 - **Contrato HTTP:** toda requisição e resposta dos testes de integração da API é validada contra `api/openapi.yaml` com `kin-openapi` (seção 11).
 - **Autorização:** credenciais ausentes, inválidas e expiradas; isolamento entre provedores (consultas e replays); ausência de efeito financeiro em acessos negados.
 - Execução com `go test -race` onde aplicável.
+
+**Resultados medidos** (15/10/2026, macOS arm64, Docker Desktop, Go 1.27.2; a camada de integração e a multi-instância rodam em containers reais): 464 testes unitários (a cobertura só dos testes unitários é de 96,9% a 98,2% em cada pacote de `internal/domain/`; o gate do CI exige 90% sobre o relatório combinado das três camadas), 174 testes de integração (`go test -tags integration -race`, cerca de 2m20s) e 24 de multi-instância (`go test -tags multiinstance -race -shuffle=on`, 3m12s, com processos reais). Os oito cenários obrigatórios do enunciado e as evidências de cada linha da tabela de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md).
 
 ## 17. Limitações, interpretações e trabalho não concluído
 
@@ -742,24 +744,39 @@ Interpretações adotadas:
 - Entrada monetária **estrita** (exatamente duas casas), sem aceitar formas equivalentes.
 - Aceite síncrono; `PENDING` não é confirmado no banco, apenas `PENDING_REFERENCE` (o worker conclui as linhas `PENDING` que, mesmo assim, apareçam).
 - Um `ROLLBACK` de `REFUND` não reabre a `BET` original.
-- `WIN` com referência opcional segue o fluxo de referência pendente quando informada.
+- `WIN` com referência opcional segue o fluxo da referência (e espera por ela) quando informada; o valor do prêmio não precisa ser o da aposta, e o `WIN` nunca conta como reversão.
+- A referência é resolvida entre as transações do **próprio provedor**; o id de outro provedor equivale a inexistente. Uma reversão tem de ter exatamente o valor do original (sem reversão parcial).
+- Um `LOSS` trava e lê a carteira (para informar um saldo coerente), mas não a atualiza: nem lançamento, nem mudança de versão.
+- Um `WIN` ou uma reversão que estouraria o maior saldo representável é recusado com `BALANCE_LIMIT_EXCEEDED` (código acrescentado ao catálogo original), em vez de um erro interno que um provedor poderia provocar.
 - Referência que permanece pendente até o limite resulta em `REFERENCE_NOT_PROCESSED`; `REFERENCE_NOT_FOUND` só quando nunca existiu.
-- Estado `FAILED` é usado apenas para falha permanente de infraestrutura ao processar pendências; o caminho síncrono desfaz tudo em falhas transitórias.
+- O estado `FAILED` existe no modelo, no schema e no catálogo (`INTERNAL_PERMANENT_FAILURE`), mas nenhum caminho o produz hoje: uma falha transitória desfaz a transação inteira (e o cliente ou a fila tenta de novo), e uma espera que acaba vira `REJECTED`. Ele fica reservado para uma falha permanente de infraestrutura que um dia precise ser registrada.
 - Rejeições de negócio, inclusive as corrigíveis (`CURRENCY_MISMATCH`, `PLAYER_MISMATCH`, mismatches de referência), são persistidas e terminais. A correção exige uma nova operação com novo `externalTransactionId`.
 - Carteira inexistente gera rejeição persistida (`WALLET_NOT_FOUND`) com `wallet_id` nulo.
 - `POST /wallets` não usa chave de idempotência; o reenvio recebe `409` com o `walletId` existente.
 
+Desvios do desenho original (decididos durante a construção):
+
+- O consumidor SQS **limita o tempo de tratamento** de cada mensagem (`SQS_CONSUMER_PROCESSING_TIMEOUT`, 20s, abaixo dos 30s de visibilidade) em vez de estender a visibilidade enquanto trabalha (seção 12).
+- O catálogo de `failureCode` ganhou `BALANCE_LIMIT_EXCEEDED` (seção 11).
+- `completed_at` da inbox é nulo apenas dentro da transação que trata a mensagem; o papel da aplicação só insere e completa (seção 5).
+- A resolução da referência acontece depois do lock da carteira e do *claim* (seção 7), e as operações em espera guardam a agenda na própria `wager_transactions` (seção 10).
+
 Limitações conhecidas:
 
 - Escala fixa de duas casas (sem moedas de outra escala).
+- A inbox e a outbox não têm política de retenção: crescem uma linha por mensagem e por evento. Para produção seria preciso arquivar ou apagar as concluídas depois de uma janela.
+- A reconciliação soma o ledger inteiro da carteira (leitura em um snapshot): o custo cresce com o número de lançamentos; não há saldo incremental nem checkpoint.
+- O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
+- Cada tentativa do worker é uma transação por operação; um lote grande de esperas na mesma carteira é resolvido em série (o lock da carteira serializa de qualquer modo).
 - `/metrics` sem autenticação (assume rede interna).
 - Autenticação: o emissor e o JWKS podem ser `http` (necessário no Compose local; em produção devem ser `https`); não há limite para o tempo de vida do token além do `exp` que o IdP emite; cada requisição recusada gera uma linha de log `Info` (um sondador barulhento enche o log, mas não o contador, que tem rótulos fixos); o prazo de início do Fx usa o mesmo valor do shutdown (`SHUTDOWN_TIMEOUT`), e é ele que limita a espera pelo Keycloak.
 - Eventos de saída são at-least-once; consumidores precisam deduplicar por `eventId`.
 - Janela de deduplicação do FIFO (5 minutos) não é usada como garantia.
+- Não há medição de carga (o teste de carga é opcional e não foi feito; ver abaixo): os números de throughput e latência do desenho não foram medidos.
 
-Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga é o último ticket opcional do [roadmap](docs/ROADMAP.md) (R22); os motivos da escolha estão lá.
+Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga é o último ticket opcional do [roadmap](docs/ROADMAP.md) (R22), não feito; os motivos da escolha estão lá.
 
-Trabalho não concluído: **a aplicação** (domínio, schema, casos de uso, autenticação, consumidor SQS, workers e endpoints), na ordem de [docs/ROADMAP.md](docs/ROADMAP.md). Este documento antecede o código e deve ser revisado ao final para refletir desvios, resultados de testes e métricas medidas.
+Trabalho não concluído: nada do que o enunciado exige. Ficaram de fora os diferenciais opcionais acima (partidas dobradas, tracing, dashboards e o teste de carga), a retenção da inbox e da outbox e a possibilidade de `FAILED` por falha permanente (ver as limitações). A entrega, com as evidências por critério, os oito cenários e as decisões finais, está em [docs/DELIVERY.md](docs/DELIVERY.md).
 
 ## 18. CI/CD
 

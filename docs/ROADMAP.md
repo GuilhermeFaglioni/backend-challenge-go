@@ -33,6 +33,8 @@ Vale para todo ticket; as issues apontam para cá em vez de repetir.
 
 ## Tickets
 
+> **Situação:** R1 a R21 foram entregues (cada um em um PR com os checks verdes e as mutações descritas). R22, o teste de carga, é opcional e não foi feito. A evidência de cada critério e o resultado dos oito cenários estão em [DELIVERY.md](DELIVERY.md).
+
 | Ticket | Entrega | Bloqueado por |
 | --- | --- | --- |
 | R1 `Money` | Value object: parsing estrito, aritmética com overflow, moedas, serialização | nada |
