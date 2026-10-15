@@ -34,10 +34,13 @@ const (
 	OutcomeWaiting   Outcome = "waiting"   // still no Reference: tried again later
 	OutcomeExpired   Outcome = "expired"   // it may not wait any more, and was refused for it
 	OutcomeDiscarded Outcome = "discarded" // already decided by someone else: nothing to do
+	// The worker's own outcomes, for tries that never reached a decision:
+	OutcomeError  Outcome = "error"  // the try failed for a reason that is not an outage; counted
+	OutcomeFailed Outcome = "failed" // it kept failing and ended as FAILED
 )
 
 // Outcomes lists every Outcome, so a metric can start each at zero.
-var Outcomes = []Outcome{OutcomeProcessed, OutcomeRejected, OutcomeWaiting, OutcomeExpired, OutcomeDiscarded}
+var Outcomes = []Outcome{OutcomeProcessed, OutcomeRejected, OutcomeWaiting, OutcomeExpired, OutcomeDiscarded, OutcomeError, OutcomeFailed}
 
 // Recorder is told every try that reached an outcome.
 type Recorder interface {

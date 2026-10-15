@@ -89,4 +89,13 @@ type PendingStore interface {
 	Release(ctx context.Context, ids []uuid.UUID) error
 	// Stats counts the waiting operations.
 	Stats(ctx context.Context) (PendingStats, error)
+	// RecordError counts a try that could not be made for a reason that is not an
+	// outage, keeps the reason and holds the operation back: base after the first error,
+	// doubling with each one, up to ceiling. It returns how many such errors the operation
+	// has had (0 if it was decided meanwhile).
+	RecordError(ctx context.Context, id uuid.UUID, reason string, base, ceiling time.Duration) (int, error)
+	// Fail ends an operation that keeps failing as FAILED, with the failure code
+	// INTERNAL_PERMANENT_FAILURE. It does so in SQL alone, because the row may be one the
+	// application cannot even read. It reports whether the operation was still undecided.
+	Fail(ctx context.Context, id uuid.UUID) (bool, error)
 }

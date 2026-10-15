@@ -3,6 +3,7 @@ package pendingref_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,44 @@ type fakeStore struct {
 	released []uuid.UUID
 	stats    application.PendingStats
 	err      error
+
+	errors map[uuid.UUID]int // RecordError counts
+	holds  []struct{ base, ceiling time.Duration }
+	failed []uuid.UUID
+	gone   bool // RecordError finds the operation decided
+}
+
+func (s *fakeStore) RecordError(_ context.Context, id uuid.UUID, _ string, base, ceiling time.Duration) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gone {
+		return 0, nil
+	}
+	if s.errors == nil {
+		s.errors = map[uuid.UUID]int{}
+	}
+	s.errors[id]++
+	s.holds = append(s.holds, struct{ base, ceiling time.Duration }{base, ceiling})
+	return s.errors[id], nil
+}
+
+func (s *fakeStore) Fail(_ context.Context, id uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed = append(s.failed, id)
+	return true, nil
+}
+
+func (s *fakeStore) failedIDs() []uuid.UUID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]uuid.UUID(nil), s.failed...)
+}
+
+func (s *fakeStore) errorCount(id uuid.UUID) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errors[id]
 }
 
 func (s *fakeStore) Reserve(_ context.Context, limit int, lease time.Duration) ([]application.PendingItem, error) {
@@ -266,4 +305,94 @@ func TestStartingAndStoppingAreIdempotentAndAWorkerNeverStartedStopsFine(t *test
 	w.Start()
 	require.NoError(t, w.Stop(t.Context()))
 	require.NoError(t, w.Stop(t.Context()))
+}
+
+type outcomes struct {
+	mu   sync.Mutex
+	seen []resolvepending.Outcome
+}
+
+func (o *outcomes) Resolved(x resolvepending.Outcome) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seen = append(o.seen, x)
+}
+
+func (o *outcomes) list() []resolvepending.Outcome {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]resolvepending.Outcome(nil), o.seen...)
+}
+
+// failingWorker has the worker take the same operation in several cycles, one per batch,
+// every try failing with cause.
+func failingWorker(t *testing.T, cause error, tries, maxErrors int) (*fakeStore, *outcomes, application.PendingItem) {
+	t.Helper()
+	item := items(1)[0]
+	var batches [][]application.PendingItem
+	for range tries {
+		batches = append(batches, []application.PendingItem{item})
+	}
+	store := &fakeStore{batches: batches}
+	rec := &outcomes{}
+	opt := options()
+	opt.MaxErrors, opt.Recorder = maxErrors, rec
+	opt.ErrorBackoffBase, opt.ErrorBackoffMax = 2*time.Second, time.Minute
+	resolver := &fakeResolver{fn: func(context.Context, application.PendingItem) error { return cause }}
+	w := pendingref.New(store, resolver, opt)
+	w.Start()
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return len(store.batches) == 0
+	}, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(resolver.triedIDs()) == tries }, 2*time.Second, time.Millisecond)
+	require.NoError(t, w.Stop(t.Context()))
+	return store, rec, item
+}
+
+func TestAnOutageIsNotCountedAgainstTheOperation(t *testing.T) {
+	cause := fmt.Errorf("%w: connection refused", application.ErrTemporarilyUnavailable)
+	store, rec, item := failingWorker(t, cause, 6, 3)
+
+	require.Zero(t, store.errorCount(item.TransactionID), "the database being down is not the operation's fault")
+	require.Empty(t, store.failedIDs())
+	require.Empty(t, rec.list())
+}
+
+func TestADefectIsCountedAndAnOperationThatKeepsFailingEndsAsFailed(t *testing.T) {
+	store, rec, item := failingWorker(t, errors.New("transaction is not a valid transaction: payload hash mismatch"), 3, 3)
+
+	require.Equal(t, 3, store.errorCount(item.TransactionID))
+	require.Equal(t, []uuid.UUID{item.TransactionID}, store.failedIDs(), "failed at the third error, not before")
+	require.Equal(t, []resolvepending.Outcome{resolvepending.OutcomeError, resolvepending.OutcomeError, resolvepending.OutcomeError, resolvepending.OutcomeFailed}, rec.list())
+	require.Equal(t, 2*time.Second, store.holds[0].base, "held back with the configured backoff")
+	require.Equal(t, time.Minute, store.holds[0].ceiling)
+}
+
+func TestBelowTheLimitTheOperationIsOnlyHeldBack(t *testing.T) {
+	store, rec, item := failingWorker(t, errors.New("a bug"), 2, 3)
+
+	require.Equal(t, 2, store.errorCount(item.TransactionID))
+	require.Empty(t, store.failedIDs())
+	require.Equal(t, []resolvepending.Outcome{resolvepending.OutcomeError, resolvepending.OutcomeError}, rec.list())
+}
+
+func TestWithoutALimitNothingIsCounted(t *testing.T) {
+	store, _, item := failingWorker(t, errors.New("a bug"), 3, 0)
+	require.Zero(t, store.errorCount(item.TransactionID))
+	require.Empty(t, store.failedIDs())
+}
+
+func TestAnOperationDecidedMeanwhileIsNotFailed(t *testing.T) {
+	item := items(1)[0]
+	store := &fakeStore{batches: [][]application.PendingItem{{item}}, gone: true}
+	opt := options()
+	opt.MaxErrors = 1
+	resolver := &fakeResolver{fn: func(context.Context, application.PendingItem) error { return errors.New("a bug") }}
+	w := pendingref.New(store, resolver, opt)
+	w.Start()
+	require.Eventually(t, func() bool { return len(resolver.triedIDs()) == 1 }, 2*time.Second, time.Millisecond)
+	require.NoError(t, w.Stop(t.Context()))
+	require.Empty(t, store.failedIDs())
 }
