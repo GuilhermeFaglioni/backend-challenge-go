@@ -23,12 +23,17 @@ var Module = fx.Module("pendingref",
 
 // NewFromConfig builds the worker from the configuration and ties it to the Fx lifecycle.
 func NewFromConfig(lc fx.Lifecycle, cfg config.Config, store application.PendingStore, uc *resolvepending.UseCase, metrics *promrec.Pending, log *slog.Logger) *Worker {
+	p := cfg.PendingReference
 	w := New(store, uc, Options{
-		PollInterval: cfg.PendingReference.PollInterval,
-		BatchSize:    cfg.PendingReference.BatchSize,
-		Lease:        cfg.PendingReference.Lease,
-		Logger:       log,
-		Observer:     metrics,
+		PollInterval:     p.PollInterval,
+		BatchSize:        p.BatchSize,
+		Lease:            p.Lease,
+		Logger:           log,
+		Observer:         metrics,
+		Recorder:         metrics,
+		MaxErrors:        p.MaxErrors,
+		ErrorBackoffBase: p.BackoffBase,
+		ErrorBackoffMax:  p.BackoffMax,
 	})
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {

@@ -52,6 +52,8 @@ func TestPendingCountsEachTryByOutcomeAndShowsWhatWaits(t *testing.T) {
 		"pending_reference_resolutions_total{expired}":   1,
 		"pending_reference_resolutions_total{rejected}":  1,
 		"pending_reference_resolutions_total{discarded}": 1,
+		"pending_reference_resolutions_total{error}":     0,
+		"pending_reference_resolutions_total{failed}":    0,
 		"pending_references":                             5,
 		"pending_reference_oldest_age_seconds":           90,
 	}, got)

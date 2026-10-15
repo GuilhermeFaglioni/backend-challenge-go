@@ -7,6 +7,7 @@ package pendingref
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -39,6 +40,16 @@ type Options struct {
 	StatsEvery   time.Duration // how often the gauges are refreshed; default 2s
 	Logger       *slog.Logger
 	Observer     StatsObserver // optional
+
+	// MaxErrors is how many tries failing for a reason other than an outage an operation
+	// may have before it ends as FAILED. Zero means it is never failed.
+	MaxErrors int
+	// ErrorBackoffBase and ErrorBackoffMax hold an operation back after an error: the base
+	// after the first, doubling with each one, up to the maximum.
+	ErrorBackoffBase time.Duration
+	ErrorBackoffMax  time.Duration
+	// Recorder is told about the tries that failed and the operations that were failed.
+	Recorder resolvepending.Recorder // optional
 }
 
 // Worker is the loop. Start launches it; Stop ends it.
@@ -199,11 +210,8 @@ func (w *Worker) cycle(ctx context.Context) int {
 		}
 		_, err := w.resolver.Execute(ctx, item)
 		if err != nil {
-			// Nothing was written. The lease keeps the operation away from the other
-			// workers for a while, which is also the pause before it is tried again.
 			if ctx.Err() == nil {
-				w.log.Warn("could not try a pending operation; it will be tried again when its lease runs out",
-					slog.String("transactionId", item.TransactionID.String()), slog.Any("error", err))
+				w.failedTry(ctx, item, err)
 			}
 			continue
 		}
@@ -212,4 +220,52 @@ func (w *Worker) cycle(ctx context.Context) int {
 		w.mu.Unlock()
 	}
 	return len(items)
+}
+
+// failedTry deals with a try that wrote nothing. An outage is not the operation's fault: the
+// lease keeps it away from the other workers for a while, which is also the pause before
+// it is tried again, and nothing is counted. Anything else is a defect that trying again
+// may never fix: it is counted, and an operation that keeps failing ends as FAILED, so that
+// it is recorded for audit instead of being tried forever.
+func (w *Worker) failedTry(ctx context.Context, item application.PendingItem, cause error) {
+	id := slog.String("transactionId", item.TransactionID.String())
+	if errors.Is(cause, application.ErrTemporarilyUnavailable) || w.opts.MaxErrors < 1 {
+		w.log.Warn("could not try a pending operation; it will be tried again when its lease runs out", id, slog.Any("error", cause))
+		return
+	}
+	base, ceiling := w.opts.ErrorBackoffBase, w.opts.ErrorBackoffMax
+	if base <= 0 {
+		base = w.opts.Lease
+	}
+	ceiling = max(ceiling, base)
+	count, err := w.store.RecordError(ctx, item.TransactionID, cause.Error(), base, ceiling)
+	if err != nil {
+		w.log.Warn("could not record the error of a pending operation", id, slog.Any("error", err), slog.Any("cause", cause))
+		return
+	}
+	if count == 0 {
+		return // decided meanwhile
+	}
+	w.record(resolvepending.OutcomeError)
+	if count < w.opts.MaxErrors {
+		w.log.Warn("a pending operation could not be tried; it will be tried again",
+			id, slog.Int("errors", count), slog.Int("maxErrors", w.opts.MaxErrors), slog.Any("error", cause))
+		return
+	}
+	failed, err := w.store.Fail(ctx, item.TransactionID)
+	if err != nil {
+		w.log.Error("could not fail a pending operation that keeps failing", id, slog.Any("error", err))
+		return
+	}
+	if failed {
+		w.record(resolvepending.OutcomeFailed)
+		w.log.Error("a pending operation kept failing and was ended as FAILED (INTERNAL_PERMANENT_FAILURE)",
+			id, slog.Int("errors", count), slog.Any("error", cause))
+	}
+}
+
+func (w *Worker) record(o resolvepending.Outcome) {
+	if w.opts.Recorder != nil {
+		w.opts.Recorder.Resolved(o)
+	}
 }

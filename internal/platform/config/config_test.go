@@ -25,7 +25,7 @@ func validConfig() Config {
 		},
 		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second},
 		PendingReference: PendingReference{
-			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute,
+			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute, MaxErrors: 5,
 			PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second,
 		},
 	}
@@ -55,6 +55,7 @@ func TestValidate(t *testing.T) {
 		{name: "backoff max under the base", mutate: func(c *Config) { c.SQS.Consumer.RetryBackoffMax = time.Second }, wantErr: "SQS_CONSUMER_RETRY_BACKOFF_MAX"},
 		{name: "no pending attempts", mutate: func(c *Config) { c.PendingReference.MaxAttempts = 0 }, wantErr: "PENDING_REFERENCE_MAX_ATTEMPTS"},
 		{name: "one pending attempt", mutate: func(c *Config) { c.PendingReference.MaxAttempts = 1 }},
+		{name: "no pending error limit", mutate: func(c *Config) { c.PendingReference.MaxErrors = 0 }, wantErr: "PENDING_REFERENCE_MAX_ERRORS"},
 		{name: "no pending ttl", mutate: func(c *Config) { c.PendingReference.TTL = 0 }, wantErr: "PENDING_REFERENCE_TTL"},
 		{name: "negative pending ttl", mutate: func(c *Config) { c.PendingReference.TTL = -time.Minute }, wantErr: "PENDING_REFERENCE_TTL"},
 		{name: "no pending backoff base", mutate: func(c *Config) { c.PendingReference.BackoffBase = 0 }, wantErr: "PENDING_REFERENCE_BACKOFF_BASE"},
@@ -223,11 +224,12 @@ func TestPendingReferenceDefaultsAndEnvironment(t *testing.T) {
 	t.Setenv("PENDING_REFERENCE_POLL_INTERVAL", "100ms")
 	t.Setenv("PENDING_REFERENCE_BATCH_SIZE", "4")
 	t.Setenv("PENDING_REFERENCE_LEASE", "3s")
+	t.Setenv("PENDING_REFERENCE_MAX_ERRORS", "2")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := PendingReference{MaxAttempts: 3, TTL: 2 * time.Minute, BackoffBase: time.Second, BackoffMax: 5 * time.Second, PollInterval: 100 * time.Millisecond, BatchSize: 4, Lease: 3 * time.Second}
+	want := PendingReference{MaxAttempts: 3, TTL: 2 * time.Minute, BackoffBase: time.Second, BackoffMax: 5 * time.Second, MaxErrors: 2, PollInterval: 100 * time.Millisecond, BatchSize: 4, Lease: 3 * time.Second}
 	if cfg.PendingReference != want {
 		t.Fatalf("got %+v, want %+v", cfg.PendingReference, want)
 	}

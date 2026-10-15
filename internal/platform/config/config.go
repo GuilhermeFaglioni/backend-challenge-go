@@ -119,6 +119,10 @@ type PendingReference struct {
 	BackoffBase time.Duration `env:"BACKOFF_BASE" envDefault:"2s"`
 	// BackoffMax is the longest the gap grows to.
 	BackoffMax time.Duration `env:"BACKOFF_MAX" envDefault:"60s"`
+	// MaxErrors is how many tries that fail for a reason other than an outage (a defect:
+	// a row the application cannot read, a bug) an operation may have before it ends as
+	// FAILED. Outages are not counted: they end, and the operation is tried again.
+	MaxErrors int `env:"MAX_ERRORS" envDefault:"5"`
 	// PollInterval is how long the worker waits when nothing is due.
 	PollInterval time.Duration `env:"POLL_INTERVAL" envDefault:"500ms"`
 	// BatchSize is how many due operations a worker reserves at once.
@@ -277,6 +281,9 @@ func (p PendingReference) validate() []error {
 	}
 	if p.TTL <= 0 {
 		errs = append(errs, errors.New("PENDING_REFERENCE_TTL must be positive"))
+	}
+	if p.MaxErrors < 1 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_MAX_ERRORS must be at least 1"))
 	}
 	if p.BackoffBase <= 0 {
 		errs = append(errs, errors.New("PENDING_REFERENCE_BACKOFF_BASE must be positive"))
