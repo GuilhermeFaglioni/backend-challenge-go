@@ -93,12 +93,12 @@ Princípios que guiam as decisões:
 | Métricas | `prometheus/client_golang` | Contadores, histogramas e gauges em `/metrics`. |
 | Configuração | Variáveis de ambiente (`caarlos0/env`) | Validada no boot; `.env.example` versionado. |
 | Testes | `testing`, `testify`, `testcontainers-go` | Infraestrutura real (Postgres, Keycloak, LocalStack). |
-| Documentação da API | OpenAPI 3.1 escrito à mão, Swagger UI, `kin-openapi` | Contrato definido antes dos handlers e validado por teste. Ver [seção 11](#11-contrato-http-códigos-e-failurecode). |
+| Documentação da API | OpenAPI 3.0.3 escrito à mão, Swagger UI, `kin-openapi` | Contrato definido antes dos handlers e validado por teste. Ver [seção 11](#11-contrato-http-códigos-e-failurecode). |
 
 ## 3. Estrutura de pacotes
 
 ```
-api/openapi.yaml           contrato HTTP (OpenAPI 3.1), embutido no binário
+api/openapi.yaml           contrato HTTP (OpenAPI 3.0.3), embutido no binário
 cmd/api/main.go            só fx.New(...).Run()
 internal/
   domain/                  puro: sem Fx, HTTP, SQS nem pgx
@@ -227,7 +227,7 @@ Constraints:
 
 ### `outbox`
 
-`event_id UUID PK`, `aggregate_id`, `event_type`, `version`, `payload JSONB` (snapshot imutável), `correlation_id`, `causation_id`, `occurred_at`, `attempts`, `next_attempt_at`, `locked_until`, `published_at`. Índice parcial em `(next_attempt_at) WHERE published_at IS NULL`.
+`event_id UUID PK`, `aggregate_id` (a carteira), `event_type`, `version`, `payload JSONB` (snapshot imutável, sempre um objeto), `correlation_id`, `causation_id`, `occurred_at`, `published_at`, mais o estado de publicação: `seq` (identidade gerada, a ordem de escrita), `attempts`, `next_attempt_at`, `locked_until` e `last_error`. Índices parciais nos não publicados: por `occurred_at` (a defasagem), por `seq` (o que está pendente) e por `(aggregate_id, seq)` (o que vem antes na mesma carteira). O trigger `outbox_guard` recusa qualquer mudança no conteúdo do evento e qualquer mudança em um evento já publicado.
 
 ### Estado atual do schema (migrations 000002 a 000005)
 
@@ -236,7 +236,8 @@ Constraints:
 | `000002_wallets` | `wallets` e o trigger `wallets_version_guard`. Além das regras acima, ele impede que `id`, `player_id` e `currency` mudem. |
 | `000003_wager_transactions` | `wager_transactions` só com a identidade e o resultado; as colunas de tentativa e lease (`attempts`, `next_attempt_at`, `locked_until`, `expires_at`) e o índice de reversão chegam com os tickets que os usam. Constraints: `origin_fields_check` (abertura interna x pedido externo), `wallet_check`, `amount_check` e `failure_code_check` (só `REJECTED` e `FAILED` têm código de falha). Estados terminais são imutáveis por inteiro; `PENDING_REFERENCE` só avança. |
 | `000004_wallet_ledger` | `wallet_ledger_entries`, append-only para todos (trigger para o dono, `REVOKE UPDATE, DELETE, TRUNCATE` para `wagering_app`) e os dois triggers de coerência diferidos. |
-| `000005_outbox` | `outbox` com `payload` obrigatoriamente objeto JSON e o índice parcial dos eventos não publicados (`occurred_at WHERE published_at IS NULL`); colunas de tentativa e lease chegam com o publicador. |
+| `000005_outbox` | `outbox` com `payload` obrigatoriamente objeto JSON e o índice parcial dos eventos não publicados (`occurred_at WHERE published_at IS NULL`). |
+| `000006_outbox_publishing` | O estado de publicação (`seq`, `attempts`, `next_attempt_at`, `locked_until`, `last_error`), os índices parciais do publicador e o trigger `outbox_guard` (conteúdo imutável; evento publicado congelado). |
 
 Os triggers de proteção levantam `check_violation` (`23514`), e o do ledger levanta `restrict_violation` (`23001`). Cada constraint e cada trigger tem um teste de integração que tenta violá-lo por SQL direto (`test/integration/schema_test.go`) e que foi visto falhar sem ele. O `.down.sql` do ledger declara que apaga todo o histórico financeiro.
 
@@ -579,13 +580,18 @@ Envelope:
 
 **No código (`internal/domain/event` e `internal/domain/wager`):** `Event` é um valor imutável cujo `Data` só este pacote implementa, então tipo e versão saem do construtor (`NewWagerTransactionProcessed`, `NewWalletBalanceChanged`), nunca do chamador. O construtor recusa dados que não se sustentam (ids vazios, valor não positivo, versão menor que 1, `balanceAfter` que não decorre de `balanceBefore` e do valor conforme a direção, moedas diferentes) e trunca `occurredAt` para milissegundos em UTC, de modo que o que foi validado é o que é serializado, com os campos sempre na mesma ordem. `aggregateId` é o id da carteira. `DataJSON()` devolve só o `data`, que é o snapshot gravado na coluna `payload` da outbox. Os eventos de abertura não têm campos de provedor, id externo, rodada nem jogo: o tipo de dados nem os possui. `wager.Transaction` (caminho `OPENING`) implementa a máquina de estados da seção 9: `Process` e `Fail` devolvem a transação seguinte, um estado terminal não aceita transição, e `Rehydrate` restaura o estado guardado sem aplicar transição nem emitir evento, recusando uma abertura que traga provedor, id externo, chave, hash, rodada, jogo ou referência. As demais transições (`REJECTED`, `PENDING_REFERENCE`) e os tipos externos chegam com o caso de uso que os processa.
 
-**Publisher (worker separado):**
+**Publisher (worker separado, `internal/adapters/outbox`):**
 
-- Reserva lotes com `UPDATE outbox SET locked_until = now() + lease WHERE event_id IN (SELECT ... WHERE published_at IS NULL AND next_attempt_at <= now() AND (locked_until IS NULL OR locked_until < now()) ORDER BY occurred_at FOR UPDATE SKIP LOCKED LIMIT n) RETURNING ...`, em transação curta que é confirmada antes da publicação. Vários publishers disputam sem duplicar o trabalho.
-- Publica no SQS e então marca `published_at`. Falha: `attempts++` e `next_attempt_at` com backoff exponencial.
-- **Recuperação:** se o publisher morre depois do commit e antes de publicar, ou depois de publicar e antes de marcar, o `locked_until` expira e outra instância reassume. A republicação preserva o `eventId` (e usa como `MessageDeduplicationId`). A semântica é at-least-once: consumidores deduplicam por `eventId`.
-- Garantia de ordem: `MessageGroupId = aggregateId`.
-- Destino: fila `wager-events.fifo`, provisionada pelo script do LocalStack. Contrato de roteamento: um grupo por carteira (`MessageGroupId = aggregateId`); o tipo do evento vai também no atributo de mensagem `eventType`, para consumidores filtrarem sem abrir o corpo; consumidores externos deduplicam por `eventId`.
+- **Estado de publicação** (migration `000006`): `seq` (chave de ordem gerada pelo banco), `attempts`, `next_attempt_at`, `locked_until` (o lease) e `last_error`. Todos os tempos vêm do relógio do **banco**, então as instâncias não precisam concordar sobre a hora. O conteúdo do evento é imutável e um evento publicado nunca mais muda (trigger `outbox_guard`).
+- **Reserva em transação curta**, confirmada antes da publicação: `WITH due AS (SELECT ... WHERE published_at IS NULL AND next_attempt_at <= now() AND (locked_until IS NULL OR locked_until <= now()) AND NOT EXISTS (<evento anterior da mesma carteira ainda não publicado>) ORDER BY seq LIMIT n FOR UPDATE SKIP LOCKED) UPDATE outbox SET locked_until = now() + lease FROM due ... RETURNING ...`. `SKIP LOCKED` deixa vários publishers disputarem sem esperar uns pelos outros e sem pegar a mesma linha.
+- **Ordem por carteira:** um evento só é reservado depois que todo evento anterior da mesma carteira foi publicado, inclusive os que outro publisher está segurando ou que esperam um backoff. Cada carteira contribui, no máximo, com um evento por lote, e o loop não espera entre lotes cheios, então uma carteira muito ativa continua escoando. O `seq` é atribuído no `INSERT`, com o lock da carteira ainda preso pela transação que escreve, por isso cresce na ordem em que a carteira mudou (o `occurred_at` vem do relógio da aplicação e instâncias podem divergir).
+- **Publicação:** um `SendMessageBatch` por lote (até 10). `MessageGroupId` = id da carteira, `MessageDeduplicationId` = id do evento, atributos de mensagem `eventType` e `correlationId`. O corpo é o envelope (`event.Envelope`, o mesmo caminho de serialização do `Event`) com o `data` lido da linha: o evento publicado é o snapshot guardado. O PostgreSQL guarda `jsonb`, então a ordem das chaves do `data` publicado pode diferir da escrita; o JSON é o mesmo valor.
+- **Resultado:** o que a fila aceitou vira `published_at = now()` (e perde o lease). Uma falha, do lote ou de uma entrada recusada, faz `attempts++`, `next_attempt_at = now() + backoff`, guarda o motivo (limitado a 500 bytes, sem bytes inválidos) e devolve o lease. Backoff: 1s dobrando até 5 min, com 20% de variação para mais ou para menos. Se o registro do resultado falhar depois de um envio bem-sucedido, nada é marcado: o lease vence e o evento é enviado de novo.
+- **Recuperação:** se o publisher morre depois de reservar, ou depois de publicar e antes de marcar, o `locked_until` vence e outra instância reassume. A republicação preserva o `eventId` (e o `MessageDeduplicationId`). A semântica é at-least-once: consumidores deduplicam por `eventId`. Pontos de falha `outbox_after_reserve` e `outbox_after_publish` provam as duas mortes.
+- **Fila fora do ar:** os eventos ficam e voltam a ser tentados com backoff; o segundo evento de uma carteira nem é tentado enquanto o primeiro espera. Uma transação desfeita nunca gera evento publicado, porque suas linhas nunca foram visíveis.
+- **Parada (`SIGTERM`):** o publisher para depois dos servidores HTTP e antes do pool do PostgreSQL e do cliente SQS. Deixa o lote em andamento terminar e ser registrado; se o prazo de parada acaba antes, interrompe o envio, **devolve os leases** do lote (sem contar tentativa) e sai, para que outra instância assuma de imediato.
+- **Métricas:** `outbox_lag_seconds` (idade do evento não publicado mais antigo, 0 se não há), `outbox_published_total`, `outbox_publish_failures_total`, `outbox_publish_retries_total` (tentativas de um evento que já havia falhado) e `outbox_reserve_errors_total`. Configuração: `OUTBOX_POLL_INTERVAL` (500ms), `OUTBOX_BATCH_SIZE` (10, o limite do SQS) e `OUTBOX_LEASE` (30s).
+- **Contrato da fila de saída** (`wager-events.fifo`): um grupo por carteira (`MessageGroupId = aggregateId`), deduplicação por id do evento, `eventType` e `correlationId` como atributos de mensagem, corpo no formato do envelope acima. Consumidores externos deduplicam por `eventId`: a deduplicação do FIFO só vale por cinco minutos.
 
 ## 13. Autenticação e autorização
 

@@ -24,11 +24,18 @@ const (
 	HTTPBeforeListen Point = "http_before_listen"
 	// HTTPAfterListen is reached right after the HTTP server opens its port.
 	HTTPAfterListen Point = "http_after_listen"
+	// OutboxAfterReserve is reached by the outbox publisher after it reserved a
+	// batch and before it published anything: the events are leased and unsent.
+	OutboxAfterReserve Point = "outbox_after_reserve"
+	// OutboxAfterPublish is reached by the outbox publisher after the queue accepted
+	// a batch and before it marked the events as published: they are sent but still
+	// look unpublished, and another instance must publish them again.
+	OutboxAfterPublish Point = "outbox_after_publish"
 )
 
 // Points lists every point. Adding a constant above without adding it here is
 // caught by a test, so a point cannot exist in the code and be unknown to the
 // `faultinject` build.
 func Points() []Point {
-	return []Point{HTTPBeforeListen, HTTPAfterListen}
+	return []Point{HTTPBeforeListen, HTTPAfterListen, OutboxAfterReserve, OutboxAfterPublish}
 }

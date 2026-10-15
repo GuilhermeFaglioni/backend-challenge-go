@@ -127,6 +127,7 @@ Todas estão em [.env.example](.env.example). A aplicação valida a configuraç
 | `OIDC_DISCOVERY_URL` | não | Onde buscar metadados e JWKS; padrão é o issuer |
 | `OIDC_AUDIENCE` | não | `aud` esperado (padrão `wallet-api`) |
 | `SQS_INPUT_QUEUE`, `SQS_EVENTS_QUEUE` | não | Filas FIFO de entrada e de eventos |
+| `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE` | não | Publicador da outbox: espera quando não há nada a enviar (`500ms`), eventos por lote (`10`, máximo do SQS) e por quanto tempo um evento reservado fica reservado (`30s`) |
 | `CORS_ALLOWED_ORIGINS` | não | Origens de navegador autorizadas a chamar a API (separadas por vírgula, no formato `scheme://host[:porta]`). Vazio, o padrão, não autoriza nenhuma; o Compose autoriza o Swagger UI |
 | `HTTP_ADDR`, `LOG_LEVEL`, `SHUTDOWN_TIMEOUT`, `DATABASE_MAX_CONNS`, `INSTANCE_ID` | não | Ajustes operacionais |
 

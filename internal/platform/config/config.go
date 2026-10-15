@@ -26,6 +26,7 @@ type Config struct {
 	AWS      AWS      `envPrefix:"AWS_"`
 	SQS      SQS      `envPrefix:"SQS_"`
 	OIDC     OIDC     `envPrefix:"OIDC_"`
+	Outbox   Outbox   `envPrefix:"OUTBOX_"`
 }
 
 type Database struct {
@@ -42,6 +43,18 @@ type AWS struct {
 type SQS struct {
 	InputQueue  string `env:"INPUT_QUEUE" envDefault:"wager-transactions.fifo"`
 	EventsQueue string `env:"EVENTS_QUEUE" envDefault:"wager-events.fifo"`
+}
+
+// Outbox tunes the publisher that sends committed events to the events queue.
+type Outbox struct {
+	// PollInterval is how long the publisher waits when it found nothing to send.
+	PollInterval time.Duration `env:"POLL_INTERVAL" envDefault:"500ms"`
+	// BatchSize is how many events are reserved and sent together; SQS accepts at
+	// most 10 in one batch.
+	BatchSize int `env:"BATCH_SIZE" envDefault:"10"`
+	// Lease is how long a reserved event stays reserved. If the instance that took
+	// it dies, another one takes it after this time.
+	Lease time.Duration `env:"LEASE" envDefault:"30s"`
 }
 
 type OIDC struct {
@@ -68,6 +81,9 @@ func Load() (Config, error) {
 	}
 	return cfg, nil
 }
+
+// maxOutboxBatch is the most entries SQS takes in one SendMessageBatch.
+const maxOutboxBatch = 10
 
 func (c Config) Validate() error {
 	var errs []error
@@ -100,6 +116,15 @@ func (c Config) Validate() error {
 	}
 	if c.OIDC.Audience == "" {
 		errs = append(errs, errors.New("OIDC_AUDIENCE must not be empty"))
+	}
+	if c.Outbox.PollInterval <= 0 {
+		errs = append(errs, errors.New("OUTBOX_POLL_INTERVAL must be positive"))
+	}
+	if c.Outbox.BatchSize < 1 || c.Outbox.BatchSize > maxOutboxBatch {
+		errs = append(errs, fmt.Errorf("OUTBOX_BATCH_SIZE must be between 1 and %d (the SQS batch limit)", maxOutboxBatch))
+	}
+	if c.Outbox.Lease < time.Second {
+		errs = append(errs, errors.New("OUTBOX_LEASE must be at least 1s"))
 	}
 	for _, origin := range c.CORSAllowedOrigins {
 		if err := validateOrigin(origin); err != nil {

@@ -96,7 +96,11 @@ done
 # service name, while tokens carry the host-facing issuer: an instance that logged
 # this line got through that split.
 for service in $(docker compose ps --services | grep '^app-'); do
-  docker compose logs --no-color "$service" 2>/dev/null | grep -q '"msg":"identity provider ready"' \
+  # The logs are captured first: `grep -q` leaves as soon as it matches, and with
+  # pipefail the producer's SIGPIPE would turn a match into a failure once the log
+  # is longer than a pipe buffer.
+  service_logs=$(docker compose logs --no-color "$service" 2>/dev/null)
+  grep -q '"msg":"identity provider ready"' <<<"$service_logs" \
     || fail "${service} never reported the identity provider as ready"
   ok "${service} discovered the identity provider (issuer/discovery split)"
 done
@@ -214,6 +218,32 @@ wallet_id=$(json_get id < "$SMOKE_BODY")
 [ -n "$wallet_id" ] || fail "the created wallet has no id"
 ok "an internal token opened wallet ${wallet_id} through :${first_port}"
 
+# The opening wrote two events to the outbox in the same transaction; the publishers
+# of the instances send them to the events queue, one message group per wallet.
+events_in_queue() {
+  [ "$(awslocal_sqs get-queue-attributes --queue-url "$(queue_url wager-events.fifo)" \
+    --attribute-names ApproximateNumberOfMessages --query Attributes.ApproximateNumberOfMessages --output text)" -ge 2 ]
+}
+wait_for "the wallet's two events in wager-events.fifo" events_in_queue
+event_messages=$(awslocal_sqs receive-message --queue-url "$(queue_url wager-events.fifo)" \
+  --max-number-of-messages 10 --visibility-timeout 0 --attribute-names MessageGroupId \
+  --message-attribute-names eventType --output json)
+EVENT_MESSAGES="$event_messages" WALLET_ID="$wallet_id" python3 - <<'PY' || fail "the events in the queue are not the wallet's two events"
+import json, os, sys
+
+wallet = os.environ["WALLET_ID"]
+messages = json.loads(os.environ["EVENT_MESSAGES"]).get("Messages", [])
+types = sorted(
+    m["MessageAttributes"]["eventType"]["StringValue"]
+    for m in messages
+    if m["Attributes"].get("MessageGroupId") == wallet
+)
+if types != ["WagerTransactionProcessed", "WalletBalanceChanged"]:
+    print(f"events of wallet {wallet}: {types}", file=sys.stderr)
+    sys.exit(1)
+PY
+ok "the opening's two events reached wager-events.fifo, grouped by wallet"
+
 # Another instance sees it: the instances share the database, not memory.
 status=$(api_status GET "$second_port" "/wallets/${wallet_id}" "$internal_token")
 [ "$status" = "200" ] || fail "GET /wallets/${wallet_id} through :${second_port} answered ${status}"
@@ -233,13 +263,13 @@ ok "swagger ui is up on :8089"
 preflight=$(curl -sS -o /dev/null -D - -X OPTIONS "http://localhost:${first_port}/wallets" \
   -H 'Origin: http://localhost:8089' -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: authorization,content-type')
-echo "$preflight" | grep -qi '^access-control-allow-origin: http://localhost:8089' \
+grep -qi '^access-control-allow-origin: http://localhost:8089' <<<"$preflight" \
   || fail "the API does not allow the swagger ui origin in a preflight"
 ok "the API answers the swagger ui preflight"
 
 token_preflight=$(curl -sS -o /dev/null -D - -X OPTIONS "${REALM_URL}/protocol/openid-connect/token" \
   -H 'Origin: http://localhost:8089' -H 'Access-Control-Request-Method: POST')
-echo "$token_preflight" | grep -qi '^access-control-allow-origin: http://localhost:8089' \
+grep -qi '^access-control-allow-origin: http://localhost:8089' <<<"$token_preflight" \
   || fail "keycloak does not allow the swagger ui origin on the token endpoint"
 ok "keycloak allows the swagger ui origin on the token endpoint"
 

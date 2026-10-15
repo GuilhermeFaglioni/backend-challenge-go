@@ -102,6 +102,7 @@ func appConfig(t *testing.T, db infra.Database, sqsEndpoint string) config.Confi
 			DiscoveryURL: kc.IssuerURL(),
 			Audience:     "wallet-api",
 		},
+		Outbox: config.Outbox{PollInterval: 50 * time.Millisecond, BatchSize: 10, Lease: 5 * time.Second},
 	}
 }
 

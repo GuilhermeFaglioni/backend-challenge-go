@@ -320,3 +320,58 @@ func TestAnInternalEventCarriesNoExternalMetadata(t *testing.T) {
 		require.NotContains(t, string(got), field)
 	}
 }
+
+// --- the stored form --------------------------------------------------------------
+
+// What the publisher sends is built from the outbox row, not from the typed event.
+// It must be byte for byte what the event itself serializes to.
+func TestAnEnvelopeBuiltFromStoredPartsIsByteIdenticalToTheEvent(t *testing.T) {
+	for name, build := range map[string]func() (event.Event, error){
+		"balance changed": func() (event.Event, error) { return event.NewWalletBalanceChanged(meta(), changedData(t)) },
+		"processed":       func() (event.Event, error) { return event.NewWagerTransactionProcessed(meta(), processedData(t)) },
+		"no causation": func() (event.Event, error) {
+			m := meta()
+			m.CausationID = ""
+			return event.NewWalletBalanceChanged(m, changedData(t))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, err := build()
+			require.NoError(t, err)
+			data, err := e.DataJSON()
+			require.NoError(t, err)
+
+			envelope := event.Envelope{
+				EventID: e.EventID(), EventType: e.Type(), AggregateID: e.AggregateID(),
+				CorrelationID: e.CorrelationID(), CausationID: e.CausationID(),
+				OccurredAt: e.OccurredAt(), Version: e.Version(), Data: data,
+			}
+			got, err := json.Marshal(envelope)
+			require.NoError(t, err)
+			want, err := json.Marshal(e)
+			require.NoError(t, err)
+			require.Equal(t, string(want), string(got))
+		})
+	}
+}
+
+func TestAnEnvelopeWritesItsTimeInUTCWithMilliseconds(t *testing.T) {
+	e, err := event.NewWalletBalanceChanged(meta(), changedData(t))
+	require.NoError(t, err)
+	data, err := e.DataJSON()
+	require.NoError(t, err)
+	local := time.Date(2026, 10, 14, 9, 0, 0, 123_456_789, time.FixedZone("BRT", -3*60*60))
+	got, err := json.Marshal(event.Envelope{
+		EventID: eventID, EventType: "WalletBalanceChanged", AggregateID: walletID, CorrelationID: "c",
+		OccurredAt: local, Version: 1, Data: data,
+	})
+	require.NoError(t, err)
+	require.Contains(t, string(got), `"occurredAt":"2026-10-14T12:00:00.123Z"`)
+}
+
+func TestAnEnvelopeNeedsItsData(t *testing.T) {
+	_, err := json.Marshal(event.Envelope{EventID: eventID, EventType: "X", AggregateID: walletID, CorrelationID: "c", OccurredAt: occurredAt, Version: 1})
+	require.ErrorIs(t, err, event.ErrUninitialized)
+	_, err = json.Marshal(event.Envelope{EventID: eventID, EventType: "X", AggregateID: walletID, CorrelationID: "c", OccurredAt: occurredAt, Version: 1, Data: []byte("not json")})
+	require.Error(t, err, "data that is not JSON would corrupt the envelope")
+}

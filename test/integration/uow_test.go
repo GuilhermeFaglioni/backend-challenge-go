@@ -45,6 +45,8 @@ func emptyWallet(t *testing.T, player uuid.UUID) wallet.Wallet {
 	return w
 }
 
+func newUnitOfWork(pool *pgxpool.Pool) application.UnitOfWork { return postgres.NewUnitOfWork(pool) }
+
 func noWait(int) time.Duration { return time.Millisecond }
 
 type uowEnv struct {
