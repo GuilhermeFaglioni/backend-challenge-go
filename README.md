@@ -7,7 +7,7 @@ Serviço em Go que processa operações financeiras de provedores de jogos (`BET
 - Ordem de construção e definição de pronto: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Vocabulário do projeto: [CONTEXT.md](CONTEXT.md)
 
-> **Status: infraestrutura pronta, aplicação por construir.** A composição Fx, a configuração, os health checks, as métricas, o ambiente Docker e todo o CI/CD (testes unitários, de integração e multi-instância, cobertura, publicação da imagem e proteção da `main`) estão prontos. Domínio, schema, casos de uso, autenticação, consumidor SQS e workers seguem o [roadmap](docs/ROADMAP.md) e ainda não foram implementados. Este README será completado conforme cada parte for entregue.
+> **Status: entregue.** Todos os endpoints do enunciado, o consumidor SQS com inbox, a outbox, as operações `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (inclusive à espera da referência), a reconciliação, a autenticação e o CI/CD estão implementados e testados. O que foi medido, o que ficou de fora e a evidência de cada critério de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md); as decisões, em [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Pré-requisitos
 
@@ -39,6 +39,17 @@ bash .github/scripts/smoke.sh
 ```
 
 ### API
+
+| Endpoint | Papel | Para quê |
+| --- | --- | --- |
+| `POST /wallets` | `internal` | abrir uma carteira (a abertura entra no ledger) |
+| `GET /wallets/{walletId}` | `internal` | ler a carteira |
+| `GET /wallets/{walletId}/ledger` | `internal` | listar o ledger, com cursor opaco |
+| `POST /wallets/{walletId}/reconciliation` | `internal` | conferir o saldo guardado contra o ledger |
+| `POST /wagering/transactions` | `provider` | enviar uma operação (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`), com `Idempotency-Key` |
+| `GET /wagering/transactions/{transactionId}` | `provider`, `internal` | ler uma transação pelo id |
+| `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | `provider`, `internal` | ler pelo id externo |
+| `GET /health/live`, `GET /health/ready`, `GET /metrics`, `GET /openapi.yaml` | nenhum | saúde, métricas e o contrato |
 
 O contrato da API é [api/openapi.yaml](api/openapi.yaml), escrito à mão, embutido no binário e servido em `GET /openapi.yaml`. A API usa JSON, valores monetários em string com duas casas (`"100.00"`) e erros no formato `{"error":{"code":...,"message":...}}`. Os endpoints de carteira exigem o papel `internal`.
 
@@ -74,6 +85,10 @@ Consultar o resultado, pelo id ou pelo id externo (um provedor só enxerga as pr
 curl -s localhost:8081/providers/provider-a/wagering/transactions/transaction-123 -H "Authorization: Bearer $PROVIDER_TOKEN"
 ```
 
+```bash
+curl -s localhost:8081/wagering/transactions/<transactionId-da-resposta> -H "Authorization: Bearer $PROVIDER_TOKEN"
+```
+
 Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. `BET` debita, `WIN` credita e `LOSS` só registra o resultado (valor `0.00`, sem lançamento e sem mudar a versão da carteira). `REFUND` e `ROLLBACK` nomeiam a operação que desfazem em `referenceExternalTransactionId` (resolvida entre as transações do próprio provedor): o `REFUND` devolve uma `BET`, o `ROLLBACK` desfaz uma `BET`, um `WIN` ou um `REFUND` com o movimento contrário, e cada transação só pode ser revertida uma vez. Cada regra da referência recusa com o seu código (`REFERENCE_NOT_FOUND`, `REFERENCE_KIND_INVALID`, `REFERENCE_MISMATCH`, `REFERENCE_AMOUNT_MISMATCH`, `REFERENCE_ALREADY_REVERSED`, `REVERSAL_INSUFFICIENT_FUNDS`...). Um `WIN` pode citar a `BET` que paga. Se a referência ainda não chegou (a reversão foi enviada antes da `BET`, por exemplo), a operação é aceita com `202` e `PENDING_REFERENCE`, e um worker volta a tentá-la com espera crescente por até 10 tentativas ou 15 minutos; ela termina como `PROCESSED` ou como `REJECTED` (`REFERENCE_NOT_FOUND` se a referência nunca apareceu, `REFERENCE_NOT_PROCESSED` se apareceu e não completou), e o resultado se lê em `GET /wagering/transactions/<id>`.
 
 A mesma operação também entra pela fila `wager-transactions.fifo` (corpo no formato da seção 10 do enunciado, `MessageGroupId` = id da carteira). O resultado é o mesmo do HTTP, inclusive a idempotência: a mensagem é apagada da fila só depois do commit, o que não pode ser tratado (JSON inválido, tipo desconhecido, campo inválido, chave ou `messageId` reutilizados com outro conteúdo) vai para `wager-transactions-dlq.fifo` com o motivo em `errorReason`, e uma falha do momento deixa a mensagem na fila para outra tentativa, com espera crescente.
@@ -102,6 +117,10 @@ curl -s localhost:8081/health/ready
 
 ```bash
 curl -s localhost:8081/metrics
+```
+
+```bash
+curl -s localhost:8081/openapi.yaml
 ```
 
 Para rodar uma instância fora do Docker, suba só as dependências e use as variáveis do `.env.example`:
@@ -241,7 +260,7 @@ Obter um token (os secrets são apenas locais):
 curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-local-secret
 ```
 
-A API valida esses tokens localmente (assinatura RS256, emissor, audiência `wallet-api`, expiração) e só sobe depois de descobrir o Keycloak; o desenho está no `ARCHITECTURE.md`, seção 13. Toda rota de negócio é registrada com os papéis que podem chamá-la (`provider` ou `internal`), e um teste reprova rotas sem autorização. Os demais endpoints de negócio chegam com os próximos tickets do [roadmap](docs/ROADMAP.md).
+A API valida esses tokens localmente (assinatura RS256, emissor, audiência `wallet-api`, expiração) e só sobe depois de descobrir o Keycloak; o desenho está no `ARCHITECTURE.md`, seção 13. Toda rota de negócio é registrada com os papéis que podem chamá-la (`provider` ou `internal`), e um teste reprova rotas sem autorização.
 
 ## Testes
 
@@ -278,7 +297,7 @@ Sobem PostgreSQL, LocalStack (SQS) e Keycloak em containers com `testcontainers-
 go test -tags integration -race -count=1 -shuffle=on ./test/...
 ```
 
-O que cobrem hoje: migrations (aplicar, reverter e reaplicar), privilégios do papel `wagering_app`, início e encerramento da composição Fx contra a infraestrutura real (ordem de shutdown e ausência de goroutines remanescentes), readiness acompanhando Postgres e SQS, e o provisionamento do Keycloak e das filas.
+O que cobrem: migrations (aplicar, reverter e reaplicar) e cada constraint e trigger do schema tentados por SQL direto, privilégios do papel `wagering_app`, a autenticação contra o Keycloak real, o contrato HTTP de todos os endpoints validado contra o `api/openapi.yaml`, o isolamento entre provedores, cada caso de uso contra o banco real (inclusive disputas concorrentes), o consumidor SQS e a inbox contra o LocalStack (com cópias de mensagem de `MessageDeduplicationId` diferente, para provar que a deduplicação é da aplicação), o publicador da outbox, o worker das referências pendentes, a reconciliação, e o início e encerramento da composição Fx contra a infraestrutura real (ordem de shutdown e ausência de goroutines remanescentes).
 
 Se um teste falhar, os logs dos containers são gravados em `INTEGRATION_LOG_DIR` (o CI os publica como artefato por 7 dias):
 
@@ -294,7 +313,7 @@ Executam o binário da aplicação como **processos separados do sistema operaci
 go test -tags multiinstance -race -count=1 -shuffle=on ./test/multiinstance/
 ```
 
-Cobrem hoje: três instâncias prontas; uma instância morta com `SIGKILL` sem afetar as outras e voltando no mesmo endereço; `SIGTERM` encerrando limpo (servidor antes do pool) e gravando cobertura; um ponto de falha derrubando o processo com o código `77`; e a recusa de iniciar com um nome de ponto de falha inexistente. Qualquer corrida de dados relatada por um processo reprova o teste.
+Cobrem: três instâncias prontas; uma instância morta com `SIGKILL` sem afetar as outras e voltando no mesmo endereço; `SIGTERM` encerrando limpo; os pontos de falha (código `77`); o consumidor morto entre o commit e a remoção da mensagem; dois publicadores disputando a outbox e recuperando uma publicação interrompida; uma espera pela referência cujo processo morre, cujo worker morre segurando a reserva, que atravessa o reinício de todos os processos ou que expira; e as garantias financeiras da seção seguinte. Qualquer corrida de dados relatada por um processo reprova o teste.
 
 **Pontos de falha** (`internal/platform/faultinject`): um processo sai abruptamente quando seu nome está em `FAULT_POINTS` (lista separada por vírgula). Só existem em binários compilados com `-tags faultinject`; sem a tag, `Hit` não faz nada e a variável é ignorada (o binário de produção nem contém o código). Para criar um ponto, declare a constante em `points.go`, registre-a em `faultinject_on.go` e chame `faultinject.Hit(...)` onde o processo deve cair.
 
