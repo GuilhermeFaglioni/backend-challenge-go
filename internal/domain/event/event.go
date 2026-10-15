@@ -17,6 +17,7 @@ import (
 
 const (
 	typeWagerTransactionProcessed = "WagerTransactionProcessed"
+	typeWagerTransactionRejected  = "WagerTransactionRejected"
 	typeWalletBalanceChanged      = "WalletBalanceChanged"
 )
 
@@ -158,18 +159,22 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 
 // --- WagerTransactionProcessed -----------------------------------------------------
 
-// WagerTransactionProcessedData says that a Wager Transaction ended PROCESSED. It
-// carries no provider, external id, round or game: this version is for internal
-// openings.
+// WagerTransactionProcessedData says that a Wager Transaction ended PROCESSED. An
+// internal opening carries no provider, external id, round or game; an external
+// transaction carries all four.
 type WagerTransactionProcessedData struct {
-	TransactionID uuid.UUID    `json:"transactionId"`
-	WalletID      uuid.UUID    `json:"walletId"`
-	PlayerID      uuid.UUID    `json:"playerId"`
-	Kind          wager.Kind   `json:"kind"`
-	Origin        wager.Origin `json:"origin"`
-	Money         money.Money  `json:"money"`
-	Balance       money.Money  `json:"balance"`
-	WalletVersion int64        `json:"walletVersion"`
+	TransactionID         uuid.UUID    `json:"transactionId"`
+	WalletID              uuid.UUID    `json:"walletId"`
+	PlayerID              uuid.UUID    `json:"playerId"`
+	Kind                  wager.Kind   `json:"kind"`
+	Origin                wager.Origin `json:"origin"`
+	ProviderID            string       `json:"providerId,omitempty"`
+	ExternalTransactionID string       `json:"externalTransactionId,omitempty"`
+	RoundID               string       `json:"roundId,omitempty"`
+	GameID                string       `json:"gameId,omitempty"`
+	Money                 money.Money  `json:"money"`
+	Balance               money.Money  `json:"balance"`
+	WalletVersion         int64        `json:"walletVersion"`
 }
 
 func (WagerTransactionProcessedData) eventType() string        { return typeWagerTransactionProcessed }
@@ -184,6 +189,8 @@ func NewWagerTransactionProcessed(m Meta, d WagerTransactionProcessedData) (Even
 		return Event{}, ErrInvalidID
 	case d.Kind == "" || d.Origin == "":
 		return Event{}, ErrInvalidKind
+	case !hasExactlyTheMetadataOf(d.Origin, d.ProviderID, d.ExternalTransactionID, d.RoundID, d.GameID):
+		return Event{}, fmt.Errorf("%w: the provider's metadata goes with an external origin, and only with it", ErrInvalidKind)
 	case !d.Money.IsValid() || d.Money.IsNegative() || !d.Balance.IsValid() || d.Balance.IsNegative():
 		return Event{}, ErrInvalidMoney
 	case d.WalletVersion < 1:
@@ -191,6 +198,61 @@ func NewWagerTransactionProcessed(m Meta, d WagerTransactionProcessedData) (Even
 	}
 	if _, err := d.Money.Compare(d.Balance); err != nil {
 		return Event{}, fmt.Errorf("event: %w", err)
+	}
+	return newEvent(m, d)
+}
+
+// hasExactlyTheMetadataOf: an external origin carries all four fields, an internal
+// one none of them.
+func hasExactlyTheMetadataOf(origin wager.Origin, fields ...string) bool {
+	present := 0
+	for _, f := range fields {
+		if f != "" {
+			present++
+		}
+	}
+	if origin == wager.OriginExternal {
+		return present == len(fields)
+	}
+	return present == 0
+}
+
+// --- WagerTransactionRejected ------------------------------------------------------
+
+// WagerTransactionRejectedData says that a business rule refused an external
+// operation. The wallet is the one the operation asked for, which may not exist
+// (WALLET_NOT_FOUND).
+type WagerTransactionRejectedData struct {
+	TransactionID         uuid.UUID         `json:"transactionId"`
+	WalletID              uuid.UUID         `json:"walletId"`
+	PlayerID              uuid.UUID         `json:"playerId"`
+	Kind                  wager.Kind        `json:"kind"`
+	ProviderID            string            `json:"providerId"`
+	ExternalTransactionID string            `json:"externalTransactionId"`
+	RoundID               string            `json:"roundId"`
+	GameID                string            `json:"gameId"`
+	Money                 money.Money       `json:"money"`
+	FailureCode           wager.FailureCode `json:"failureCode"`
+}
+
+func (WagerTransactionRejectedData) eventType() string        { return typeWagerTransactionRejected }
+func (WagerTransactionRejectedData) eventVersion() int        { return 1 }
+func (d WagerTransactionRejectedData) aggregateID() uuid.UUID { return d.WalletID }
+
+// NewWagerTransactionRejected builds the event, refusing data that does not hold
+// together.
+func NewWagerTransactionRejected(m Meta, d WagerTransactionRejectedData) (Event, error) {
+	switch {
+	case d.TransactionID == uuid.Nil || d.WalletID == uuid.Nil || d.PlayerID == uuid.Nil:
+		return Event{}, ErrInvalidID
+	case d.Kind == "" || d.Kind == wager.KindOpening:
+		return Event{}, ErrInvalidKind
+	case !hasExactlyTheMetadataOf(wager.OriginExternal, d.ProviderID, d.ExternalTransactionID, d.RoundID, d.GameID):
+		return Event{}, fmt.Errorf("%w: a rejected operation always comes from a provider", ErrInvalidKind)
+	case !d.Money.IsValid() || d.Money.IsNegative():
+		return Event{}, ErrInvalidMoney
+	case !d.FailureCode.IsRejection():
+		return Event{}, ErrInvalidFailureCode
 	}
 	return newEvent(m, d)
 }

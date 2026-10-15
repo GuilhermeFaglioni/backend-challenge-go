@@ -38,11 +38,30 @@ type WalletRepository interface {
 	// Insert stores a new wallet. If the player already has a wallet in that
 	// currency it stores nothing and returns *WalletAlreadyExistsError.
 	Insert(ctx context.Context, w wallet.Wallet) error
+	// Lock reads the wallet and holds a lock on it until the database transaction
+	// ends, so that operations on one wallet run one at a time while other wallets
+	// go on in parallel (ADR 0002). ErrWalletNotFound if there is none.
+	Lock(ctx context.Context, id uuid.UUID) (wallet.Wallet, error)
+	// Update stores the wallet after a movement, but only if it is still at the
+	// version of before: anything else that changed it is ErrConcurrentUpdate.
+	Update(ctx context.Context, before, after wallet.Wallet) error
 }
 
 type TransactionRepository interface {
 	// InsertOpening stores an internal opening in its final state.
 	InsertOpening(ctx context.Context, tx wager.Transaction) error
+	// FindByKey reads the provider's transaction with that idempotency key. Keys are
+	// scoped by provider: one provider never sees another's.
+	FindByKey(ctx context.Context, providerID, idempotencyKey string) (wager.Transaction, bool, error)
+	// FindByExternalID reads the provider's transaction with that external id.
+	FindByExternalID(ctx context.Context, providerID, externalTransactionID string) (wager.Transaction, bool, error)
+	// Claim stores the transaction, taking its idempotency key and its external id,
+	// unless either is already taken: then it stores nothing and returns false. It
+	// waits for a concurrent claim of the same key to end, so the answer is final.
+	Claim(ctx context.Context, tx wager.Transaction) (claimed bool, err error)
+	// Finish records the outcome of a claimed transaction: its status, failure code
+	// and result.
+	Finish(ctx context.Context, tx wager.Transaction) error
 }
 
 type LedgerRepository interface {
@@ -63,6 +82,10 @@ type WalletReader interface {
 
 // ErrWalletNotFound: there is no wallet with that id.
 var ErrWalletNotFound = errors.New("wallet not found")
+
+// ErrConcurrentUpdate: the wallet changed under a unit of work that held no lock on
+// it, or whose lock did not protect it. The unit of work is retried.
+var ErrConcurrentUpdate = errors.New("the wallet was changed concurrently")
 
 // ErrTemporarilyUnavailable marks an error that is the infrastructure's, not the
 // request's, and that trying again later may fix: the database cannot be reached,

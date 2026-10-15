@@ -18,7 +18,7 @@ import (
 var Module = fx.Module("postgres",
 	fx.Provide(
 		NewPool,
-		fx.Annotate(NewUnitOfWork, fx.As(new(application.UnitOfWork))),
+		fx.Annotate(newUnitOfWorkFromFx, fx.As(new(application.UnitOfWork))),
 		fx.Annotate(NewWalletReader, fx.As(new(application.WalletReader))),
 		fx.Annotate(NewOutboxStore, fx.As(new(application.OutboxStore))),
 		fx.Annotate(newReadinessCheck, fx.ResultTags(`group:"readiness"`)),
@@ -59,4 +59,20 @@ func NewPool(lc fx.Lifecycle, cfg config.Config, log *slog.Logger) (*pgxpool.Poo
 
 func newReadinessCheck(pool *pgxpool.Pool) health.Check {
 	return health.Check{Name: "postgres", Fn: pool.Ping}
+}
+
+type unitOfWorkParams struct {
+	fx.In
+
+	Pool *pgxpool.Pool
+	// Observer is told about every retry; the application provides one for metrics.
+	Observer application.RetryObserver `optional:"true"`
+}
+
+func newUnitOfWorkFromFx(p unitOfWorkParams) *UnitOfWork {
+	u := NewUnitOfWork(p.Pool)
+	if p.Observer != nil {
+		u = u.WithObserver(p.Observer)
+	}
+	return u
 }
