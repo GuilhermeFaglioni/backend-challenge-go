@@ -188,7 +188,7 @@ Todas estão em [.env.example](.env.example). A aplicação valida a configuraç
 | `PENDING_REFERENCE_BACKOFF_BASE`, `PENDING_REFERENCE_BACKOFF_MAX` | não | Intervalo entre tentativas: começa em `2s`, dobra a cada tentativa e para em `60s` (com jitter de ±20%) |
 | `PENDING_REFERENCE_MAX_ERRORS` | não | Quantas tentativas que falham por defeito (não por indisponibilidade) uma operação em espera pode ter antes de terminar como `FAILED` (`5`) |
 | `PENDING_REFERENCE_POLL_INTERVAL`, `PENDING_REFERENCE_BATCH_SIZE`, `PENDING_REFERENCE_LEASE` | não | Worker das referências pendentes: espera quando nada venceu (`500ms`), operações reservadas por vez (`10`) e quanto tempo uma reserva vale se a instância morrer (`30s`) |
-| `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_LEASE` | não | Publicador da outbox: espera quando não há nada a enviar (`500ms`), eventos por lote (`10`, máximo do SQS) e por quanto tempo um evento reservado fica reservado (`30s`) |
+| `OUTBOX_POLL_INTERVAL`, `OUTBOX_BATCH_SIZE`, `OUTBOX_EVENTS_PER_WALLET`, `OUTBOX_LEASE` | não | Publicador da outbox: espera quando não há nada a enviar (`500ms`), carteiras por ciclo (`10`: cada rodada manda um evento de cada num `SendMessageBatch`, que aceita até 10), eventos seguidos de uma carteira por ciclo, um por rodada (`10`, até 100) e por quanto tempo um evento reservado fica reservado (`30s`) |
 | `CORS_ALLOWED_ORIGINS` | não | Origens de navegador autorizadas a chamar a API (separadas por vírgula, no formato `scheme://host[:porta]`). Vazio, o padrão, não autoriza nenhuma; o Compose autoriza o Swagger UI |
 | `HTTP_ADDR`, `LOG_LEVEL`, `SHUTDOWN_TIMEOUT`, `DATABASE_MAX_CONNS`, `INSTANCE_ID` | não | Ajustes operacionais |
 

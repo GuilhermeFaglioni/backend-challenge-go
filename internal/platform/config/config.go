@@ -99,9 +99,13 @@ type Consumer struct {
 type Outbox struct {
 	// PollInterval is how long the publisher waits when it found nothing to send.
 	PollInterval time.Duration `env:"POLL_INTERVAL" envDefault:"500ms"`
-	// BatchSize is how many events are reserved and sent together; SQS accepts at
-	// most 10 in one batch.
+	// BatchSize is how many wallets are reserved together. Each round of a cycle sends one
+	// event of each in one SendMessageBatch, which takes at most 10.
 	BatchSize int `env:"BATCH_SIZE" envDefault:"10"`
+	// PerWallet is how many consecutive events of a wallet are reserved at once and sent,
+	// one per round, in a cycle. A wallet in one publisher's hands at a time is published
+	// at about PerWallet events per cycle instead of one.
+	PerWallet int `env:"EVENTS_PER_WALLET" envDefault:"10"`
 	// Lease is how long a reserved event stays reserved. If the instance that took
 	// it dies, another one takes it after this time.
 	Lease time.Duration `env:"LEASE" envDefault:"30s"`
@@ -160,6 +164,9 @@ func Load() (Config, error) {
 // maxOutboxBatch is the most entries SQS takes in one SendMessageBatch.
 const maxOutboxBatch = 10
 
+// maxPerWallet bounds the rounds of a cycle, so a cycle stays well inside its lease.
+const maxPerWallet = 100
+
 func (c Config) Validate() error {
 	var errs []error
 
@@ -199,6 +206,9 @@ func (c Config) Validate() error {
 	}
 	if c.Outbox.BatchSize < 1 || c.Outbox.BatchSize > maxOutboxBatch {
 		errs = append(errs, fmt.Errorf("OUTBOX_BATCH_SIZE must be between 1 and %d (the SQS batch limit)", maxOutboxBatch))
+	}
+	if c.Outbox.PerWallet < 1 || c.Outbox.PerWallet > maxPerWallet {
+		errs = append(errs, fmt.Errorf("OUTBOX_EVENTS_PER_WALLET must be between 1 and %d", maxPerWallet))
 	}
 	if c.Outbox.Lease < time.Second {
 		errs = append(errs, errors.New("OUTBOX_LEASE must be at least 1s"))

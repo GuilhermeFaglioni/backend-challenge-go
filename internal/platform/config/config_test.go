@@ -23,7 +23,7 @@ func validConfig() Config {
 			DiscoveryURL: "http://keycloak:8080/realms/wagering",
 			Audience:     "wallet-api",
 		},
-		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second},
+		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second},
 		PendingReference: PendingReference{
 			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute, MaxErrors: 5,
 			PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second,
@@ -77,6 +77,9 @@ func TestValidate(t *testing.T) {
 		{name: "zero outbox batch", mutate: func(c *Config) { c.Outbox.BatchSize = 0 }, wantErr: "OUTBOX_BATCH_SIZE"},
 		{name: "outbox batch beyond SQS", mutate: func(c *Config) { c.Outbox.BatchSize = 11 }, wantErr: "OUTBOX_BATCH_SIZE"},
 		{name: "outbox batch at the limit", mutate: func(c *Config) { c.Outbox.BatchSize = 10 }},
+		{name: "no events per wallet", mutate: func(c *Config) { c.Outbox.PerWallet = 0 }, wantErr: "OUTBOX_EVENTS_PER_WALLET"},
+		{name: "too many events per wallet", mutate: func(c *Config) { c.Outbox.PerWallet = 101 }, wantErr: "OUTBOX_EVENTS_PER_WALLET"},
+		{name: "events per wallet at the limit", mutate: func(c *Config) { c.Outbox.PerWallet = 100 }},
 		{name: "outbox lease too short", mutate: func(c *Config) { c.Outbox.Lease = 500 * time.Millisecond }, wantErr: "OUTBOX_LEASE"},
 		{name: "cors origin ok", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"http://localhost:8089", "https://docs.example.com"} }},
 		{name: "cors wildcard", mutate: func(c *Config) { c.CORSAllowedOrigins = []string{"*"} }, wantErr: "CORS_ALLOWED_ORIGINS"},
@@ -161,7 +164,7 @@ func TestOutboxDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second}
+	want := Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 30 * time.Second}
 	if cfg.Outbox != want {
 		t.Fatalf("got %+v, want %+v", cfg.Outbox, want)
 	}

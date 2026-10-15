@@ -42,7 +42,8 @@ const (
 // Options configures a Publisher.
 type Options struct {
 	PollInterval time.Duration // wait when a cycle found nothing
-	BatchSize    int           // events reserved and sent together (SQS takes at most 10)
+	BatchSize    int           // wallets reserved together; each round sends one event of each, so at most 10 (one SendMessageBatch)
+	PerWallet    int           // consecutive events of a wallet reserved at once, sent one per round; default 1
 	Lease        time.Duration // how long a reserved event stays reserved
 	Logger       *slog.Logger
 	Registerer   prometheus.Registerer
@@ -211,7 +212,7 @@ func (p *Publisher) loop() {
 func (p *Publisher) cycle(ctx context.Context) int {
 	p.updateLag(ctx)
 
-	entries, err := p.store.Reserve(ctx, p.opts.BatchSize, p.opts.Lease)
+	entries, err := p.store.Reserve(ctx, p.opts.BatchSize, max(p.opts.PerWallet, 1), p.opts.Lease)
 	if err != nil {
 		p.metrics.reserveEr.Inc()
 		p.log.Warn("could not reserve outbox events", slog.Any("error", err))
@@ -223,20 +224,79 @@ func (p *Publisher) cycle(ctx context.Context) int {
 	p.track(entries)
 	faultinject.Hit(faultinject.OutboxAfterReserve)
 
-	messages, failures := p.prepare(entries)
-	var sent []application.OutboundMessage
-	if len(messages) > 0 {
-		sent, failures = p.send(ctx, entries, messages, failures)
-	}
+	sent, failures, unsent := p.publishInRounds(ctx, entries)
 	faultinject.Hit(faultinject.OutboxAfterPublish)
 
 	p.record(ctx, sent, failures)
 	// A batch interrupted by a stop that ran out of time stays tracked: Stop gives
 	// its leases back. Releasing after the outcome was recorded is harmless.
 	if ctx.Err() == nil {
+		if len(unsent) > 0 {
+			if err := p.store.Release(ctx, unsent); err != nil {
+				p.log.Warn("could not release outbox events held back by an earlier one that failed; their lease runs out by itself",
+					slog.Any("error", err), slog.Int("events", len(unsent)))
+			}
+		}
 		p.untrack()
 	}
 	return len(entries)
+}
+
+// publishInRounds sends the reserved events so that a wallet's order holds even when the
+// queue takes only part of a request (SQS reports each entry of a SendMessageBatch on its
+// own, and does not promise that a refused entry stops the later ones of its group). Each
+// round sends at most one event per wallet, all wallets together in one request; a wallet's
+// next event goes in the next round, and only if the one before it was accepted. A wallet
+// whose event failed stops there: the failed event is retried with backoff, and the ones
+// after it are given back unsent, to go out after it.
+func (p *Publisher) publishInRounds(ctx context.Context, entries []application.OutboxEntry) (sent []application.OutboundMessage, failures []application.OutboxFailure, unsent []uuid.UUID) {
+	var order []uuid.UUID
+	chains := map[uuid.UUID][]application.OutboxEntry{}
+	for _, entry := range entries { // in the order they were written
+		if _, seen := chains[entry.AggregateID]; !seen {
+			order = append(order, entry.AggregateID)
+		}
+		chains[entry.AggregateID] = append(chains[entry.AggregateID], entry)
+	}
+	stoppedAt := map[uuid.UUID]int{} // wallet -> index of the event that failed
+
+	for round := 0; ctx.Err() == nil; round++ {
+		var batch []application.OutboxEntry
+		for _, wallet := range order {
+			if _, stopped := stoppedAt[wallet]; !stopped && round < len(chains[wallet]) {
+				batch = append(batch, chains[wallet][round])
+			}
+		}
+		if len(batch) == 0 {
+			break
+		}
+		messages, failed := p.prepare(batch)
+		if len(messages) > 0 {
+			var accepted []application.OutboundMessage
+			accepted, failed = p.send(ctx, batch, messages, failed)
+			if ctx.Err() != nil {
+				// Interrupted by a stop that ran out of time: what was accepted is still
+				// recorded; nothing else is counted, and Stop gives the leases back.
+				return append(sent, accepted...), failures, nil
+			}
+			sent = append(sent, accepted...)
+		}
+		for _, f := range failed {
+			for _, entry := range batch {
+				if entry.EventID == f.EventID {
+					stoppedAt[entry.AggregateID] = round
+				}
+			}
+		}
+		failures = append(failures, failed...)
+	}
+
+	for wallet, at := range stoppedAt {
+		for _, entry := range chains[wallet][at+1:] {
+			unsent = append(unsent, entry.EventID)
+		}
+	}
+	return sent, failures, unsent
 }
 
 // prepare builds the message of each entry. An entry that cannot be serialized (a
