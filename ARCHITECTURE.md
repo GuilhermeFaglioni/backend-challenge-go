@@ -310,6 +310,10 @@ Regras do JSON canônico:
 
 A mesma função de domínio calcula o hash para HTTP e SQS, o que garante equivalência entre os canais.
 
+**No código (`internal/domain/wager`):** o `Request` é o único caminho até o hash. Ele só recebe os campos de negócio; a chave de idempotência e qualquer metadado de transporte entram na `Transaction`, nunca no `Request`, então não podem alterar o hash. `CanonicalJSON()` escreve o objeto com as chaves em ordem lexicográfica em todos os níveis (`externalTransactionId`, `gameId`, `kind`, `money{amount,currency}`, `playerId`, `providerId`, `referenceExternalTransactionId` quando houver, `roundId`, `walletId`), sem espaços, sem campo ausente e sem escape de HTML (`<`, `>`, `&` saem como são; só os escapes obrigatórios do JSON existem). O `amount` é a string estrita que já era, sem normalização. O hash é o SHA-256 desse texto em hexadecimal minúsculo. Os testes fixam o texto canônico e o hash de três casos com valores calculados por outra ferramenta (Python), então uma mudança acidental que invalide todos os hashes já gravados reprova o build, e um teste prova que mudar qualquer campo de negócio muda o hash.
+
+**Normalizações e validações anteriores ao hash:** nenhuma entrada é "corrigida": ou é aceita como veio, ou é recusada. `providerId` segue `[a-z0-9][a-z0-9._-]{0,62}` (o mesmo formato da claim `provider_id`). `externalTransactionId`, `roundId`, `gameId` e `referenceExternalTransactionId` são UTF-8 válido, de 1 a 128 caracteres, sem caracteres de controle e sem espaços nas pontas; são comparados e hasheados byte a byte (sem normalização Unicode: `"é"` precomposto e decomposto são identificadores diferentes). A chave de idempotência são 1 a 255 caracteres ASCII imprimíveis sem espaço, guardada como veio. Regra por tipo: `LOSS` exige exatamente `0.00`; `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor maior que zero; `REFUND` e `ROLLBACK` exigem referência; `WIN` aceita uma; `BET` e `LOSS` não aceitam; uma operação não pode referenciar a si mesma; `OPENING` nunca é aceito de fora.
+
 **Decisão ao receber uma operação:**
 
 | Situação | Resultado |
@@ -339,6 +343,10 @@ stateDiagram-v2
 ```
 
 `PROCESSED`, `REJECTED` e `FAILED` são terminais: o domínio e um trigger recusam novas transições. O replay de uma transação terminal consulta o resultado persistido sem reaplicar.
+
+**No código:** `Transaction` cobre a abertura interna e os cinco tipos externos. `New` aceita um `Request` como `PENDING`; `Process`, `Reject`, `AwaitReference` e `Fail` devolvem a transação seguinte e validam a transição, o tempo (que não volta) e o conteúdo do desfecho. Uma rejeição só aceita um código de rejeição do catálogo (`INTERNAL_PERMANENT_FAILURE` é de `FAILED`); `WALLET_NOT_FOUND` é a única que fica sem carteira, e o id pedido não se perde. Só quem nomeia uma referência pode esperar por ela. O catálogo de `failureCode` é tipado, com a classe de cada código (corrigível ou definitivo), e um teste o confronta com a tabela da [seção 11](#11-contrato-http-códigos-e-failurecode). `Rehydrate` restaura sem aplicar transição e confere que o hash guardado é o do pedido guardado, que as regras por tipo se mantêm e que carteira, resultado, código e horário de término combinam com o estado: uma linha editada à mão ou escrita com defeito é recusada em vez de carregada.
+
+**A regra da `BET` (`Transaction.Settle`):** aplica a transação à carteira nesta ordem: a carteira é do jogador (`PLAYER_MISMATCH`), está na moeda da aposta (`CURRENCY_MISMATCH`), tem saldo (`INSUFFICIENT_FUNDS`), e só então debita. Uma regra de negócio que recusa não é erro: é o desfecho (`REJECTED`, carteira e lançamento intactos). Erro é chamada indevida (outra carteira, transação já terminada, tipo ainda não suportado). Os demais tipos chegam com seus tickets.
 
 **Aceite síncrono.** O `PENDING` existe apenas dentro da transação SQL do pedido; a requisição segue até um estado final (`PROCESSED` / `REJECTED`) ou `PENDING_REFERENCE` antes do commit. Consequência: se uma instância morre antes do commit, o banco desfaz tudo e não sobra registro órfão, e o cliente reenvia com a mesma chave. Como defesa adicional, o worker de referências também retoma qualquer linha `PENDING` com `updated_at` antiga, para o caso de ela existir por uma versão futura ou intervenção manual.
 
