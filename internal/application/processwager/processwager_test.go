@@ -54,6 +54,7 @@ type memDB struct {
 	entries []wallet.LedgerEntry
 	events  []event.Event
 	inbox   map[key]inboxRow
+	sched   map[uuid.UUID]application.PendingSchedule
 
 	calls       []string
 	failAt      string // the call that fails with errInjected
@@ -67,7 +68,7 @@ var errInjected = errors.New("injected failure")
 
 func newDB() *memDB {
 	return &memDB{
-		inbox: map[key]inboxRow{}, wallets: map[uuid.UUID]wallet.Wallet{}, byKey: map[key]wager.Transaction{}, byExt: map[key]wager.Transaction{}, byID: map[uuid.UUID]wager.Transaction{},
+		inbox: map[key]inboxRow{}, sched: map[uuid.UUID]application.PendingSchedule{}, wallets: map[uuid.UUID]wallet.Wallet{}, byKey: map[key]wager.Transaction{}, byExt: map[key]wager.Transaction{}, byID: map[uuid.UUID]wager.Transaction{},
 	}
 }
 
@@ -87,6 +88,7 @@ type inboxRow struct {
 }
 
 type snapshot struct {
+	sched   map[uuid.UUID]application.PendingSchedule
 	inbox   map[key]inboxRow
 	wallets map[uuid.UUID]wallet.Wallet
 	byKey   map[key]wager.Transaction
@@ -97,11 +99,11 @@ type snapshot struct {
 }
 
 func (db *memDB) save() snapshot {
-	return snapshot{maps.Clone(db.inbox), maps.Clone(db.wallets), maps.Clone(db.byKey), maps.Clone(db.byExt), maps.Clone(db.byID), slices.Clone(db.entries), slices.Clone(db.events)}
+	return snapshot{maps.Clone(db.sched), maps.Clone(db.inbox), maps.Clone(db.wallets), maps.Clone(db.byKey), maps.Clone(db.byExt), maps.Clone(db.byID), slices.Clone(db.entries), slices.Clone(db.events)}
 }
 
 func (db *memDB) restore(s snapshot) {
-	db.inbox, db.wallets, db.byKey, db.byExt, db.byID, db.entries, db.events = s.inbox, s.wallets, s.byKey, s.byExt, s.byID, s.entries, s.events
+	db.sched, db.inbox, db.wallets, db.byKey, db.byExt, db.byID, db.entries, db.events = s.sched, s.inbox, s.wallets, s.byKey, s.byExt, s.byID, s.entries, s.events
 }
 
 func (db *memDB) Do(ctx context.Context, fn func(context.Context, application.Repositories) error) error {
@@ -214,6 +216,28 @@ func (r *txRepo) ResolveReference(_ context.Context, provider, externalID string
 	return out, nil
 }
 
+func (r *txRepo) ReadPending(_ context.Context, id uuid.UUID) (wager.Transaction, application.PendingSchedule, bool, error) {
+	db := (*memDB)(r)
+	if err := db.step("read-pending"); err != nil {
+		return wager.Transaction{}, application.PendingSchedule{}, false, err
+	}
+	t, ok := db.byID[id]
+	if !ok || (t.Status() != wager.StatusPending && t.Status() != wager.StatusPendingReference) {
+		return wager.Transaction{}, application.PendingSchedule{}, false, nil
+	}
+	return t, db.sched[id], true, nil
+}
+
+func (r *txRepo) Await(_ context.Context, t wager.Transaction, s application.PendingSchedule) error {
+	db := (*memDB)(r)
+	if err := db.step("await"); err != nil {
+		return err
+	}
+	db.store(t)
+	db.sched[t.ID()] = s
+	return nil
+}
+
 func (r *txRepo) Claim(_ context.Context, t wager.Transaction) (bool, error) {
 	db := (*memDB)(r)
 	if db.beforeClaim != nil {
@@ -316,9 +340,15 @@ func newFixture(t *testing.T, balance int64) *fixture {
 	f.db.addWallet(walletWith(t, balance))
 	f.uc = processwager.New(processwager.Deps{
 		UnitOfWork: f.db, Recorder: f.rec, Logger: slog.New(slog.NewJSONHandler(f.logs, nil)),
-		Now: func() time.Time { return now }, NewID: uuid.New,
+		Now: func() time.Time { return now }, NewID: uuid.New, Pending: testPolicy,
 	})
 	return f
+}
+
+// testPolicy waits 10 attempts or 15 minutes, with gaps of 2s doubling up to 60s and no jitter.
+var testPolicy = application.PendingPolicy{
+	MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute,
+	Jitter: func() float64 { return 0.5 },
 }
 
 func walletWith(t *testing.T, balance int64) wallet.Wallet {
@@ -1047,14 +1077,94 @@ func TestARefusedReversalIsStoredWithTheReferenceItResolvedAndMovesNothing(t *te
 	require.Contains(t, string(mustJSON(t, f.db.events[len(f.db.events)-1])), `"referenceExternalTransactionId":"transaction-123"`)
 }
 
-func TestAMissingReferenceIsAStoredRejectionForNow(t *testing.T) {
+func TestAMissingReferenceMakesTheOperationWaitForIt(t *testing.T) {
 	f := newFixture(t, 10000)
+	hooked := 0
+	f.uc = processwager.New(processwager.Deps{
+		UnitOfWork: f.db, Recorder: f.rec, Logger: slog.New(slog.NewJSONHandler(f.logs, nil)),
+		Now: func() time.Time { return now }, NewID: uuid.New, Pending: testPolicy, AfterPending: func() { hooked++ },
+	})
 
 	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "never-seen", 2500))
 
-	require.Equal(t, wager.FailureReferenceNotFound, out.Transaction.FailureCode())
-	require.Equal(t, uuid.Nil, f.db.byID[out.Transaction.ID()].External().ReferenceTransactionID)
+	require.Equal(t, wager.StatusPendingReference, out.Transaction.Status())
+	require.Equal(t, []string{"find", "lock", "claim", "reference", "await", "outbox"}, f.db.calls,
+		"the wait is recorded and announced; the wallet, the ledger and the outcome are not touched")
 	require.Equal(t, int64(10000), f.balance())
+	require.Equal(t, int64(2), f.db.wallets[wid].Version())
+	require.Empty(t, f.db.entries)
+	require.Equal(t, []processwager.Outcome{processwager.OutcomePending}, f.rec.outcomes())
+	require.Equal(t, 1, hooked, "the caller is told only after the wait is committed")
+
+	schedule := f.db.sched[out.Transaction.ID()]
+	require.Equal(t, 1, schedule.Attempts, "the arrival is the first attempt")
+	require.Equal(t, now.Add(2*time.Second), schedule.NextAttemptAt, "the first gap is the base")
+	require.Equal(t, now.Add(15*time.Minute), schedule.ExpiresAt)
+	require.Equal(t, []string{"WagerTransactionPendingReference"}, types(f.db.events))
+	require.Equal(t, wid, f.db.events[0].AggregateID())
+	data := string(mustJSON(t, f.db.events[0]))
+	require.Contains(t, data, `"referenceExternalTransactionId":"never-seen"`)
+	require.Contains(t, data, `"expiresAt":"2026-10-14T12:15:00.000Z"`)
+}
+
+func TestAWinNamingAMissingBetWaitsToo(t *testing.T) {
+	f := newFixture(t, 10000)
+	win := winInput(500)
+	win.Request.ReferenceExternalTransactionID = "bet-to-come"
+
+	out := mustExecute(t, f, win)
+
+	require.Equal(t, wager.StatusPendingReference, out.Transaction.Status())
+	require.Equal(t, int64(10000), f.balance())
+}
+
+func TestAWaitingOperationIsReplayedAsWaitingAndWritesNothing(t *testing.T) {
+	f := newFixture(t, 10000)
+	in := reversalInput(wager.KindRefund, "refund-1", "never-seen", 2500)
+	first := mustExecute(t, f, in)
+	events := len(f.db.events)
+	f.db.calls = nil
+
+	again := mustExecute(t, f, in)
+
+	require.True(t, again.IdempotentReplay)
+	require.Equal(t, wager.StatusPendingReference, again.Transaction.Status())
+	require.Equal(t, first.Transaction.ID(), again.Transaction.ID())
+	require.Equal(t, []string{"find"}, f.db.calls)
+	require.Len(t, f.db.events, events)
+}
+
+func TestTheWalletsRulesRefuseAtOnceInsteadOfWaiting(t *testing.T) {
+	f := newFixture(t, 10000)
+	in := reversalInput(wager.KindRefund, "refund-1", "never-seen", 2500)
+	in.Request.PlayerID = uuid.New()
+
+	out := mustExecute(t, f, in)
+
+	require.Equal(t, wager.FailurePlayerMismatch, out.Transaction.FailureCode())
+	require.Empty(t, f.db.sched)
+}
+
+func TestARefusalOfTheReferenceIsNotWaitedFor(t *testing.T) {
+	f := newFixture(t, 1000)
+	bet := betInput(2500) // refused: no funds
+	mustExecute(t, f, bet)
+
+	out := mustExecute(t, f, reversalInput(wager.KindRefund, "refund-1", "transaction-123", 2500))
+
+	require.Equal(t, wager.FailureReferenceNotProcessed, out.Transaction.FailureCode())
+	require.Empty(t, f.db.sched)
+}
+
+func TestNothingWaitsThatNamesNoReference(t *testing.T) {
+	f := newFixture(t, 10000)
+	hooked := false
+	f.uc = processwager.New(processwager.Deps{
+		UnitOfWork: f.db, Recorder: f.rec, Now: func() time.Time { return now }, NewID: uuid.New, Pending: testPolicy, AfterPending: func() { hooked = true },
+	})
+	mustExecute(t, f, betInput(2500))
+	require.False(t, hooked)
+	require.Empty(t, f.db.sched)
 }
 
 func TestAReversalIsReplayedAndConflictsLikeAnyOperation(t *testing.T) {

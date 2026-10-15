@@ -3,6 +3,7 @@ package wager_test
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -66,7 +67,7 @@ func found(tx wager.Transaction) wager.Reference {
 
 func settleAgainst(t *testing.T, tx wager.Transaction, ref wager.Reference, balance int64) wager.Settlement {
 	t.Helper()
-	s, err := tx.SettleAgainst(ref, walletOf(t, balance), uuid.New(), settleAt)
+	s, err := tx.SettleAgainst(ref, walletOf(t, balance), uuid.New(), settleAt, false)
 	require.NoError(t, err)
 	return s
 }
@@ -131,9 +132,9 @@ func TestEachRuleOfTheTableOfReferencesHasItsOwnCode(t *testing.T) {
 		requireRejected(t, s, wager.FailureReferenceNotFound, "")
 		require.Equal(t, uuid.Nil, s.Transaction.External().ReferenceTransactionID, "there is nothing to keep")
 	})
-	t.Run("still waiting is, for now, not found", func(t *testing.T) {
+	t.Run("found but never completed, once it may not wait any more", func(t *testing.T) {
 		s := settleAgainst(t, reversal(t, wager.KindRefund, 2500), found(ended(t, wager.StatusPending)), 10000)
-		requireRejected(t, s, wager.FailureReferenceNotFound, "")
+		requireRejected(t, s, wager.FailureReferenceNotProcessed, "")
 	})
 	t.Run("rejected or failed is not processed", func(t *testing.T) {
 		for _, status := range []wager.Status{wager.StatusRejected, wager.StatusFailed} {
@@ -206,13 +207,13 @@ func TestEachRuleOfTheTableOfReferencesHasItsOwnCode(t *testing.T) {
 	})
 	t.Run("a reversal that would overdraw", func(t *testing.T) {
 		win := processed(t, wager.KindWin, 2500)
-		s, err := reversal(t, wager.KindRollback, 2500).SettleAgainst(found(win), walletOf(t, 2499), uuid.New(), settleAt)
+		s, err := reversal(t, wager.KindRollback, 2500).SettleAgainst(found(win), walletOf(t, 2499), uuid.New(), settleAt, false)
 		require.NoError(t, err)
 		require.Equal(t, wager.FailureReversalInsufficientFunds, s.Transaction.FailureCode(), "told apart from a bet's INSUFFICIENT_FUNDS")
 		require.Equal(t, int64(2499), s.Wallet.Balance().Minor())
 		require.False(t, s.Entry.IsValid())
 
-		s, err = reversal(t, wager.KindRollback, 2500).SettleAgainst(found(win), walletOf(t, 2500), uuid.New(), settleAt)
+		s, err = reversal(t, wager.KindRollback, 2500).SettleAgainst(found(win), walletOf(t, 2500), uuid.New(), settleAt, false)
 		require.NoError(t, err)
 		require.Equal(t, wager.StatusProcessed, s.Transaction.Status(), "exactly the balance still works")
 		require.True(t, s.Wallet.Balance().IsZero())
@@ -242,7 +243,7 @@ func TestTheRulesAreCheckedInTheOrderOfTheTable(t *testing.T) {
 	// The wallet's own rules come before the Reference's: a stranger's wallet.
 	stranger, err := domainwallet.Rehydrate(domainwallet.State{ID: wallet, PlayerID: uuid.New(), Balance: brl(t, 10000), Version: 2, LastTransactionID: uuid.New(), CreatedAt: at, UpdatedAt: at})
 	require.NoError(t, err)
-	got, err := reversal(t, wager.KindRefund, 2500).SettleAgainst(wager.Reference{}, stranger, uuid.New(), settleAt)
+	got, err := reversal(t, wager.KindRefund, 2500).SettleAgainst(wager.Reference{}, stranger, uuid.New(), settleAt, false)
 	require.NoError(t, err)
 	require.Equal(t, wager.FailurePlayerMismatch, got.Transaction.FailureCode())
 }
@@ -279,7 +280,94 @@ func TestAWinNamingABetOfAnotherRoundIsAMismatch(t *testing.T) {
 }
 
 func TestARefundThatWouldOverflowTheBalanceIsRefused(t *testing.T) {
-	s, err := reversal(t, wager.KindRefund, 2500).SettleAgainst(found(processed(t, wager.KindBet, 2500)), walletOf(t, math.MaxInt64), uuid.New(), settleAt)
+	s, err := reversal(t, wager.KindRefund, 2500).SettleAgainst(found(processed(t, wager.KindBet, 2500)), walletOf(t, math.MaxInt64), uuid.New(), settleAt, false)
 	require.NoError(t, err)
 	require.Equal(t, wager.FailureBalanceLimitExceeded, s.Transaction.FailureCode())
+}
+
+// --- waiting for a Reference that has not arrived ---------------------------------------
+
+func settleWaiting(t *testing.T, tx wager.Transaction, ref wager.Reference) wager.Settlement {
+	t.Helper()
+	s, err := tx.SettleAgainst(ref, walletOf(t, 10000), uuid.New(), settleAt, true)
+	require.NoError(t, err)
+	return s
+}
+
+func requireWaiting(t *testing.T, s wager.Settlement, msg string) {
+	t.Helper()
+	require.True(t, s.Waiting(), msg)
+	require.Equal(t, wager.StatusPendingReference, s.Transaction.Status(), msg)
+	require.False(t, s.Entry.IsValid(), msg)
+	require.Equal(t, int64(10000), s.Wallet.Balance().Minor(), msg)
+	require.Equal(t, int64(2), s.Wallet.Version(), msg)
+	require.Empty(t, s.Transaction.FailureCode(), msg)
+}
+
+func TestAReferenceThatIsNotThereYetIsWaitedFor(t *testing.T) {
+	t.Run("not found", func(t *testing.T) {
+		for _, tx := range []wager.Transaction{reversal(t, wager.KindRefund, 2500), reversal(t, wager.KindRollback, 2500), winOf(t, 100, "transaction-100")} {
+			requireWaiting(t, settleWaiting(t, tx, wager.Reference{}), string(tx.Kind()))
+		}
+	})
+	t.Run("itself still waiting", func(t *testing.T) {
+		_, err := bet(t, 2500).AwaitReference(settleAt)
+		require.ErrorIs(t, err, wager.ErrNoReference, "a bet names no reference, so it cannot be the one waiting")
+		p := betParams(t)
+		p.Kind, p.ReferenceExternalTransactionID = wager.KindWin, "x"
+		w, err := wager.New(wager.NewParams{ID: uuid.New(), Request: newRequest(t, p), IdempotencyKey: "k", CorrelationID: "c", At: at})
+		require.NoError(t, err)
+		w, err = w.AwaitReference(settleAt)
+		require.NoError(t, err)
+		requireWaiting(t, settleWaiting(t, reversal(t, wager.KindRefund, 2500), found(w)), "a reference that waits for its own")
+	})
+}
+
+func TestWaitingTakesNothingFromTheRulesOfTheWallet(t *testing.T) {
+	stranger, err := domainwallet.Rehydrate(domainwallet.State{ID: wallet, PlayerID: uuid.New(), Balance: brl(t, 10000), Version: 2, LastTransactionID: uuid.New(), CreatedAt: at, UpdatedAt: at})
+	require.NoError(t, err)
+	s, err := reversal(t, wager.KindRefund, 2500).SettleAgainst(wager.Reference{}, stranger, uuid.New(), settleAt, true)
+	require.NoError(t, err)
+	require.Equal(t, wager.FailurePlayerMismatch, s.Transaction.FailureCode(), "refused at once, there is nothing to wait for")
+}
+
+func TestAReferenceThatEndedWithoutSuccessIsNotWaitedFor(t *testing.T) {
+	for _, status := range []wager.Status{wager.StatusRejected, wager.StatusFailed} {
+		s := settleWaiting(t, reversal(t, wager.KindRefund, 2500), found(ended(t, status)))
+		requireRejected(t, s, wager.FailureReferenceNotProcessed, string(status))
+	}
+}
+
+func TestAnOperationAlreadyWaitingStaysAsItIsWhileItMayWait(t *testing.T) {
+	waiting := settleWaiting(t, reversal(t, wager.KindRefund, 2500), wager.Reference{}).Transaction
+
+	again, err := waiting.SettleAgainst(wager.Reference{}, walletOf(t, 10000), uuid.New(), settleAt.Add(time.Minute), true)
+
+	require.NoError(t, err)
+	requireWaiting(t, again, "still not there")
+	require.Equal(t, waiting.UpdatedAt(), again.Transaction.UpdatedAt(), "a try that changes nothing changes nothing")
+}
+
+func TestAWaitingOperationIsAppliedWhenItsReferenceArrives(t *testing.T) {
+	waiting := settleWaiting(t, reversal(t, wager.KindRefund, 2500), wager.Reference{}).Transaction
+
+	s, err := waiting.SettleAgainst(found(processed(t, wager.KindBet, 2500)), walletOf(t, 10000), uuid.New(), settleAt.Add(time.Minute), true)
+
+	require.NoError(t, err)
+	require.Equal(t, wager.StatusProcessed, s.Transaction.Status())
+	require.Equal(t, int64(12500), s.Wallet.Balance().Minor())
+	require.True(t, s.Entry.IsValid())
+}
+
+func TestAWaitingOperationIsRefusedWhenItMayNotWaitAnyMore(t *testing.T) {
+	waiting := settleWaiting(t, reversal(t, wager.KindRefund, 2500), wager.Reference{}).Transaction
+	later := settleAt.Add(time.Hour)
+
+	never, err := waiting.SettleAgainst(wager.Reference{}, walletOf(t, 10000), uuid.New(), later, false)
+	require.NoError(t, err)
+	requireRejected(t, never, wager.FailureReferenceNotFound, "it never appeared")
+
+	stuck, err := waiting.SettleAgainst(found(ended(t, wager.StatusPending)), walletOf(t, 10000), uuid.New(), later, false)
+	require.NoError(t, err)
+	requireRejected(t, stuck, wager.FailureReferenceNotProcessed, "it appeared and never completed")
 }

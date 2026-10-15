@@ -27,6 +27,8 @@ type Config struct {
 	SQS      SQS      `envPrefix:"SQS_"`
 	OIDC     OIDC     `envPrefix:"OIDC_"`
 	Outbox   Outbox   `envPrefix:"OUTBOX_"`
+	// PendingReference tunes the wait of an operation for a Reference that has not arrived.
+	PendingReference PendingReference `envPrefix:"PENDING_REFERENCE_"`
 }
 
 type Database struct {
@@ -77,6 +79,27 @@ type Outbox struct {
 	BatchSize int `env:"BATCH_SIZE" envDefault:"10"`
 	// Lease is how long a reserved event stays reserved. If the instance that took
 	// it dies, another one takes it after this time.
+	Lease time.Duration `env:"LEASE" envDefault:"30s"`
+}
+
+// PendingReference is how an operation waits for its Reference and how the worker that
+// takes it up again behaves.
+type PendingReference struct {
+	// MaxAttempts is how many times an operation is tried, the first, when it arrives,
+	// included; it is refused when the last one finds its Reference still missing.
+	MaxAttempts int `env:"MAX_ATTEMPTS" envDefault:"10"`
+	// TTL is how long after it arrived an operation may still wait.
+	TTL time.Duration `env:"TTL" envDefault:"15m"`
+	// BackoffBase is the gap after the first attempt; it doubles with each attempt.
+	BackoffBase time.Duration `env:"BACKOFF_BASE" envDefault:"2s"`
+	// BackoffMax is the longest the gap grows to.
+	BackoffMax time.Duration `env:"BACKOFF_MAX" envDefault:"60s"`
+	// PollInterval is how long the worker waits when nothing is due.
+	PollInterval time.Duration `env:"POLL_INTERVAL" envDefault:"500ms"`
+	// BatchSize is how many due operations a worker reserves at once.
+	BatchSize int `env:"BATCH_SIZE" envDefault:"10"`
+	// Lease is how long a reserved operation stays reserved. If the instance that took it
+	// dies, another one takes it after this time.
 	Lease time.Duration `env:"LEASE" envDefault:"30s"`
 }
 
@@ -152,6 +175,7 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("OUTBOX_LEASE must be at least 1s"))
 	}
 	errs = append(errs, c.SQS.Consumer.validate()...)
+	errs = append(errs, c.PendingReference.validate()...)
 	for _, origin := range c.CORSAllowedOrigins {
 		if err := validateOrigin(origin); err != nil {
 			errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS: %q: %w", origin, err))
@@ -215,6 +239,32 @@ func (c Consumer) validate() []error {
 	}
 	if c.RetryBackoffMax < c.RetryBackoffBase {
 		errs = append(errs, errors.New("SQS_CONSUMER_RETRY_BACKOFF_MAX must not be less than SQS_CONSUMER_RETRY_BACKOFF_BASE"))
+	}
+	return errs
+}
+
+func (p PendingReference) validate() []error {
+	var errs []error
+	if p.MaxAttempts < 1 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_MAX_ATTEMPTS must be at least 1"))
+	}
+	if p.TTL <= 0 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_TTL must be positive"))
+	}
+	if p.BackoffBase <= 0 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_BACKOFF_BASE must be positive"))
+	}
+	if p.BackoffMax < p.BackoffBase {
+		errs = append(errs, errors.New("PENDING_REFERENCE_BACKOFF_MAX must not be less than PENDING_REFERENCE_BACKOFF_BASE"))
+	}
+	if p.PollInterval <= 0 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_POLL_INTERVAL must be positive"))
+	}
+	if p.BatchSize < 1 {
+		errs = append(errs, errors.New("PENDING_REFERENCE_BATCH_SIZE must be at least 1"))
+	}
+	if p.Lease < time.Second {
+		errs = append(errs, errors.New("PENDING_REFERENCE_LEASE must be at least 1s"))
 	}
 	return errs
 }

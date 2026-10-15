@@ -82,6 +82,22 @@ func rejectedBet(t *testing.T, code wager.FailureCode, replay bool) processwager
 	return processwager.Output{Transaction: rejected, IdempotentReplay: replay}
 }
 
+func waitingRefund(t *testing.T, replay bool) processwager.Output {
+	t.Helper()
+	amount, err := money.FromMinor(2500, money.BRL)
+	require.NoError(t, err)
+	request, err := wager.NewRequest(wager.RequestParams{
+		ProviderID: "provider-a", ExternalTransactionID: "refund-1", PlayerID: wagerPlayer, WalletID: wagerWallet,
+		RoundID: "round-987", GameID: "fortune-chimp", Kind: wager.KindRefund, Amount: amount, ReferenceExternalTransactionID: "transaction-123",
+	})
+	require.NoError(t, err)
+	tx, err := wager.New(wager.NewParams{ID: uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"), Request: request, IdempotencyKey: "provider-a:refund-1", CorrelationID: "corr", At: now})
+	require.NoError(t, err)
+	waiting, err := tx.AwaitReference(now.Add(time.Second))
+	require.NoError(t, err)
+	return processwager.Output{Transaction: waiting, IdempotentReplay: replay}
+}
+
 func newWageringEnv(t *testing.T) *wageringEnv {
 	t.Helper()
 	e := &wageringEnv{processor: &fakeProcessor{output: processedBet(t, false)}, registry: prometheus.NewRegistry(), logs: &bytes.Buffer{}}
@@ -170,6 +186,19 @@ func TestARejectionAnswers422WithItsCode(t *testing.T) {
 	rec := e.send(validOperation())
 	require.Equal(t, http.StatusUnprocessableEntity, rec.Code, "a replay of a rejection is the same rejection")
 	require.Contains(t, rec.Body.String(), `"idempotentReplay":true`)
+}
+
+func TestAnOperationWaitingForItsReferenceIs202AndItsReplayToo(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		e := newWageringEnv(t)
+		e.processor.output = waitingRefund(t, replay)
+
+		rec := e.send(validOperation())
+
+		require.Equal(t, http.StatusAccepted, rec.Code)
+		require.JSONEq(t, fmt.Sprintf(`{"transactionId":"0192f298-345e-7e38-af88-e43f851a819d","status":"PENDING_REFERENCE","idempotentReplay":%t}`, replay), rec.Body.String())
+		require.NotContains(t, rec.Body.String(), "balance", "there is no balance until it is decided")
+	}
 }
 
 func TestTheTwoConflictsAre409WithTheirOwnCodes(t *testing.T) {

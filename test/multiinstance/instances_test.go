@@ -284,6 +284,12 @@ var messagePoints = map[faultinject.Point]bool{
 	faultinject.ConsumerAfterCommit: true,
 }
 
+// waitPoints are reached by an operation waiting for its Reference.
+var waitPoints = map[faultinject.Point]bool{
+	faultinject.PendingAfterCommit:  true,
+	faultinject.PendingAfterReserve: true,
+}
+
 // One subtest per point: each fails if that point's Hit call is removed from the
 // code, so every point is proven to be wired, not just one of them.
 func TestFaultPointCrashesTheProcessAtThatPoint(t *testing.T) {
@@ -291,6 +297,10 @@ func TestFaultPointCrashesTheProcessAtThatPoint(t *testing.T) {
 		t.Run(string(point), func(t *testing.T) {
 			if messagePoints[point] {
 				crashesWhenAMessageArrives(t, point)
+				return
+			}
+			if waitPoints[point] {
+				crashesWhenAWaitArrives(t, point)
 				return
 			}
 			if !startupPoints[point] {

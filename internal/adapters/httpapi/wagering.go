@@ -61,6 +61,12 @@ type processedResponse struct {
 	IdempotentReplay bool        `json:"idempotentReplay"`
 }
 
+type pendingResponse struct {
+	TransactionID    uuid.UUID `json:"transactionId"`
+	Status           string    `json:"status"`
+	IdempotentReplay bool      `json:"idempotentReplay"`
+}
+
 type rejectedResponse struct {
 	TransactionID    uuid.UUID         `json:"transactionId"`
 	Status           string            `json:"status"`
@@ -149,6 +155,12 @@ func (h *Wagering) answer(w http.ResponseWriter, req *http.Request, correlation 
 		result, _ := tx.Result()
 		writeJSON(w, http.StatusOK, processedResponse{
 			TransactionID: tx.ID(), Status: string(wager.StatusProcessed), Balance: result.Balance, IdempotentReplay: out.IdempotentReplay,
+		})
+	case wager.StatusPendingReference:
+		// Accepted, and waiting for the operation it refers to: the result comes later,
+		// from GET /wagering/transactions/{id} and from the events.
+		writeJSON(w, http.StatusAccepted, pendingResponse{
+			TransactionID: tx.ID(), Status: string(wager.StatusPendingReference), IdempotentReplay: out.IdempotentReplay,
 		})
 	case wager.StatusRejected:
 		writeJSON(w, http.StatusUnprocessableEntity, rejectedResponse{

@@ -68,6 +68,13 @@ type TransactionRepository interface {
 	// wallet, and a Reference the operation can act on is on that wallet, so what it reads
 	// there is final.
 	ResolveReference(ctx context.Context, providerID, referenceExternalID string) (wager.Reference, error)
+	// ReadPending reads a transaction that is still undecided (PENDING or PENDING_REFERENCE)
+	// with its schedule. found is false when there is no such transaction, or it has been
+	// decided since. The caller holds the lock of its wallet.
+	ReadPending(ctx context.Context, id uuid.UUID) (tx wager.Transaction, schedule PendingSchedule, found bool, err error)
+	// Await records that the transaction waits for its Reference: its status and its
+	// schedule. It frees the lease. A transaction that already waits is only rescheduled.
+	Await(ctx context.Context, tx wager.Transaction, schedule PendingSchedule) error
 	// Claim stores the transaction, taking its idempotency key and its external id,
 	// unless either is already taken: then it stores nothing and returns false. It
 	// waits for a concurrent claim of the same key to end, so the answer is final.

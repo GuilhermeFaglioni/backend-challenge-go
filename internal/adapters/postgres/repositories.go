@@ -335,6 +335,43 @@ func (r transactionRepository) ResolveReference(ctx context.Context, providerID,
 	return wager.Reference{Found: true, Transaction: found, Reversed: reversed}, nil
 }
 
+// ReadPending reads an undecided transaction with its schedule.
+func (r transactionRepository) ReadPending(ctx context.Context, id uuid.UUID) (wager.Transaction, application.PendingSchedule, bool, error) {
+	var schedule application.PendingSchedule
+	var next, expires *time.Time
+	row := r.tx.QueryRow(ctx, `SELECT `+transactionColumns+`, attempts, next_attempt_at, expires_at FROM wager_transactions
+		WHERE id = $1 AND status IN ('PENDING', 'PENDING_REFERENCE')`, id)
+	t, err := scanTransactionWith(row, &schedule.Attempts, &next, &expires)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return wager.Transaction{}, application.PendingSchedule{}, false, nil
+	}
+	if err != nil {
+		return wager.Transaction{}, application.PendingSchedule{}, false, fmt.Errorf("read pending transaction: %w", err)
+	}
+	if next != nil {
+		schedule.NextAttemptAt = *next
+	}
+	if expires != nil {
+		schedule.ExpiresAt = *expires
+	}
+	return t, schedule, true, nil
+}
+
+// Await records the waiting state and its schedule, and frees the lease.
+func (r transactionRepository) Await(ctx context.Context, t wager.Transaction, s application.PendingSchedule) error {
+	tag, err := r.tx.Exec(ctx, `
+		UPDATE wager_transactions
+		SET status = 'PENDING_REFERENCE', attempts = $2, next_attempt_at = $3, expires_at = $4, locked_until = NULL, updated_at = $5
+		WHERE id = $1`, t.ID(), s.Attempts, s.NextAttemptAt, s.ExpiresAt, t.UpdatedAt())
+	if err != nil {
+		return fmt.Errorf("record the wait of wager transaction %s: %w", t.ID(), err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("record the wait of wager transaction %s: it was not claimed in this unit of work", t.ID())
+	}
+	return nil
+}
+
 // Claim inserts the transaction unless its key or its external id is taken.
 // ON CONFLICT DO NOTHING (with no target, so either unique index counts) waits for a
 // concurrent insert of the same key to commit or roll back, which makes the answer
@@ -402,7 +439,7 @@ func (r transactionRepository) Finish(ctx context.Context, t wager.Transaction) 
 	tag, err := r.tx.Exec(ctx, `
 		UPDATE wager_transactions
 		SET status = $2, failure_code = $3, result_balance_minor = $4, result_wallet_version = $5, updated_at = $6, processed_at = $7,
-		    reference_transaction_id = $8
+		    reference_transaction_id = $8, locked_until = NULL
 		WHERE id = $1`,
 		t.ID(), string(t.Status()), failure, resultBalance, resultVersion, t.UpdatedAt(), processed, referenceID)
 	if err != nil {

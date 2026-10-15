@@ -105,11 +105,17 @@ func (s *schema) external(t *testing.T, walletID, playerID uuid.UUID, provider, 
 			bet, provider, "reference-of-"+externalID, walletID, playerID, amount, now))
 		reference = bet
 	}
+	// A transaction waiting for its Reference carries its schedule (a check of the schema).
+	var referenceName, attempts, next, expires any
+	if status == "PENDING_REFERENCE" {
+		referenceName, attempts, next, expires = "x", 1, now.Add(time.Minute), now.Add(time.Hour)
+	}
 	require.Empty(t, s.exec(s.owner, `INSERT INTO wager_transactions
 		(id, origin, kind, provider_id, external_transaction_id, idempotency_key, payload_hash,
-		 requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, failure_code, reference_transaction_id, created_at, updated_at)
-		VALUES ($1, 'EXTERNAL', $2, $3, $4, $5, 'hash', $6, $6, $7, $8, 'BRL', $9, $10, $12, $11, $11)`,
-		id, kind, provider, externalID, key, walletID, playerID, amount, status, failure, now, reference))
+		 requested_wallet_id, wallet_id, player_id, amount_minor, currency, status, failure_code, reference_transaction_id,
+		 reference_external_transaction_id, attempts, next_attempt_at, expires_at, created_at, updated_at)
+		VALUES ($1, 'EXTERNAL', $2, $3, $4, $5, 'hash', $6, $6, $7, $8, 'BRL', $9, $10, $12, $13, coalesce($14, 0), $15, $16, $11, $11)`,
+		id, kind, provider, externalID, key, walletID, playerID, amount, status, failure, now, reference, referenceName, attempts, next, expires))
 	return id
 }
 

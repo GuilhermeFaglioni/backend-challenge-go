@@ -174,7 +174,7 @@ func TestAnOperationThatNamesAReferenceCannotBeSettledWithoutIt(t *testing.T) {
 	win := winOf(t, 100, "transaction-100")
 	_, err := win.Settle(walletOf(t, 10000), uuid.New(), settleAt)
 	require.ErrorIs(t, err, wager.ErrReferenceUnresolved)
-	_, err = bet(t, 100).SettleAgainst(wager.Reference{}, walletOf(t, 10000), uuid.New(), settleAt)
+	_, err = bet(t, 100).SettleAgainst(wager.Reference{}, walletOf(t, 10000), uuid.New(), settleAt, false)
 	require.ErrorIs(t, err, wager.ErrNoReference, "and an operation that names none has nothing to settle against")
 	_, err = pendingOpening(t).Settle(walletOf(t, 10000), uuid.New(), settleAt)
 	require.ErrorIs(t, err, wager.ErrKindNotSupported)

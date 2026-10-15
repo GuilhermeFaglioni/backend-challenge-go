@@ -24,6 +24,10 @@ func validConfig() Config {
 			Audience:     "wallet-api",
 		},
 		Outbox: Outbox{PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second},
+		PendingReference: PendingReference{
+			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute,
+			PollInterval: 500 * time.Millisecond, BatchSize: 10, Lease: 30 * time.Second,
+		},
 	}
 }
 
@@ -49,6 +53,16 @@ func TestValidate(t *testing.T) {
 		{name: "no processing timeout", mutate: func(c *Config) { c.SQS.Consumer.ProcessingTimeout = 0 }, wantErr: "SQS_CONSUMER_PROCESSING_TIMEOUT"},
 		{name: "backoff base under a second", mutate: func(c *Config) { c.SQS.Consumer.RetryBackoffBase = 500 * time.Millisecond }, wantErr: "SQS_CONSUMER_RETRY_BACKOFF_BASE"},
 		{name: "backoff max under the base", mutate: func(c *Config) { c.SQS.Consumer.RetryBackoffMax = time.Second }, wantErr: "SQS_CONSUMER_RETRY_BACKOFF_MAX"},
+		{name: "no pending attempts", mutate: func(c *Config) { c.PendingReference.MaxAttempts = 0 }, wantErr: "PENDING_REFERENCE_MAX_ATTEMPTS"},
+		{name: "one pending attempt", mutate: func(c *Config) { c.PendingReference.MaxAttempts = 1 }},
+		{name: "no pending ttl", mutate: func(c *Config) { c.PendingReference.TTL = 0 }, wantErr: "PENDING_REFERENCE_TTL"},
+		{name: "negative pending ttl", mutate: func(c *Config) { c.PendingReference.TTL = -time.Minute }, wantErr: "PENDING_REFERENCE_TTL"},
+		{name: "no pending backoff base", mutate: func(c *Config) { c.PendingReference.BackoffBase = 0 }, wantErr: "PENDING_REFERENCE_BACKOFF_BASE"},
+		{name: "pending backoff max under the base", mutate: func(c *Config) { c.PendingReference.BackoffMax = time.Second }, wantErr: "PENDING_REFERENCE_BACKOFF_MAX"},
+		{name: "pending backoff max equal to the base", mutate: func(c *Config) { c.PendingReference.BackoffMax = 2 * time.Second }},
+		{name: "no pending poll interval", mutate: func(c *Config) { c.PendingReference.PollInterval = 0 }, wantErr: "PENDING_REFERENCE_POLL_INTERVAL"},
+		{name: "no pending batch", mutate: func(c *Config) { c.PendingReference.BatchSize = 0 }, wantErr: "PENDING_REFERENCE_BATCH_SIZE"},
+		{name: "pending lease too short", mutate: func(c *Config) { c.PendingReference.Lease = 500 * time.Millisecond }, wantErr: "PENDING_REFERENCE_LEASE"},
 		{name: "relative issuer", mutate: func(c *Config) { c.OIDC.IssuerURL = "/realms/wagering" }, wantErr: "OIDC_ISSUER_URL"},
 		{name: "bad aws endpoint", mutate: func(c *Config) { c.AWS.EndpointURL = "localhost:4566" }, wantErr: "AWS_ENDPOINT_URL"},
 		{name: "empty audience", mutate: func(c *Config) { c.OIDC.Audience = "" }, wantErr: "OIDC_AUDIENCE"},
@@ -181,5 +195,34 @@ func TestConsumerSettingsComeFromTheEnvironment(t *testing.T) {
 	want := Consumer{Workers: 7, BatchSize: 3, PollWait: time.Second, ProcessingTimeout: 5 * time.Second, RetryBackoffBase: 3 * time.Second, RetryBackoffMax: 9 * time.Second}
 	if cfg.SQS.Consumer != want || cfg.SQS.DeadLetterQueue != "other-dlq.fifo" {
 		t.Fatalf("got %+v %q", cfg.SQS.Consumer, cfg.SQS.DeadLetterQueue)
+	}
+}
+
+func TestPendingReferenceDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/wagering")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("OIDC_ISSUER_URL", "http://localhost:8180/realms/wagering")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PendingReference != validConfig().PendingReference {
+		t.Fatalf("defaults: got %+v", cfg.PendingReference)
+	}
+
+	t.Setenv("PENDING_REFERENCE_MAX_ATTEMPTS", "3")
+	t.Setenv("PENDING_REFERENCE_TTL", "2m")
+	t.Setenv("PENDING_REFERENCE_BACKOFF_BASE", "1s")
+	t.Setenv("PENDING_REFERENCE_BACKOFF_MAX", "5s")
+	t.Setenv("PENDING_REFERENCE_POLL_INTERVAL", "100ms")
+	t.Setenv("PENDING_REFERENCE_BATCH_SIZE", "4")
+	t.Setenv("PENDING_REFERENCE_LEASE", "3s")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PendingReference{MaxAttempts: 3, TTL: 2 * time.Minute, BackoffBase: time.Second, BackoffMax: 5 * time.Second, PollInterval: 100 * time.Millisecond, BatchSize: 4, Lease: 3 * time.Second}
+	if cfg.PendingReference != want {
+		t.Fatalf("got %+v, want %+v", cfg.PendingReference, want)
 	}
 }

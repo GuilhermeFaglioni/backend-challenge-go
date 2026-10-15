@@ -27,7 +27,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/event"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wager"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet"
 )
@@ -53,6 +52,7 @@ type Outcome string
 const (
 	OutcomeProcessed         Outcome = "processed"
 	OutcomeRejected          Outcome = "rejected"
+	OutcomePending           Outcome = "pending" // accepted, waiting for its Reference
 	OutcomeReplayed          Outcome = "replayed"
 	OutcomeKeyConflict       Outcome = "key_conflict"
 	OutcomeDuplicateExternal Outcome = "duplicate_external"
@@ -65,7 +65,7 @@ const (
 
 // Outcomes lists every Outcome, so a metric can start each at zero.
 var Outcomes = []Outcome{
-	OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeKeyConflict, OutcomeDuplicateExternal,
+	OutcomeProcessed, OutcomeRejected, OutcomePending, OutcomeReplayed, OutcomeKeyConflict, OutcomeDuplicateExternal,
 	OutcomeDuplicateMessage, OutcomeMessageConflict, OutcomeInvalid, OutcomeUnavailable, OutcomeError,
 }
 
@@ -107,11 +107,17 @@ type Deps struct {
 	Logger     *slog.Logger
 	Now        func() time.Time
 	NewID      func() uuid.UUID
+	// Pending says how an operation waits for a Reference that has not arrived.
+	Pending application.PendingPolicy
+	// AfterPending, if set, is called once the wait of an operation is committed. It is
+	// where a test crashes the process to prove the wait survives it.
+	AfterPending func()
 }
 
 // UseCase processes operations.
 type UseCase struct {
-	deps Deps
+	deps   Deps
+	writer application.SettlementWriter
 }
 
 // New builds the use case.
@@ -119,7 +125,7 @@ func New(d Deps) *UseCase {
 	if d.Logger == nil {
 		d.Logger = slog.New(slog.DiscardHandler)
 	}
-	return &UseCase{deps: d}
+	return &UseCase{deps: d, writer: application.SettlementWriter{NewID: d.NewID, Now: d.Now, Policy: d.Pending}}
 }
 
 // Execute processes the request. A Transient error (errors.Is
@@ -128,6 +134,9 @@ func New(d Deps) *UseCase {
 func (u *UseCase) Execute(ctx context.Context, in Input) (Output, error) {
 	started := time.Now()
 	out, outcome, err := u.execute(ctx, in)
+	if err == nil && outcome == OutcomePending && u.deps.AfterPending != nil {
+		u.deps.AfterPending()
+	}
 	u.deps.Recorder.Handled(in.Request.Kind, outcome, time.Since(started))
 	u.log(ctx, in, out, outcome, err)
 	return out, err
@@ -231,24 +240,17 @@ func (u *UseCase) process(ctx context.Context, repos application.Repositories, i
 	if err != nil {
 		return Output{}, "", err
 	}
-	if settlement.Entry.IsValid() {
-		if err := repos.Wallets().Update(ctx, locked, settlement.Wallet); err != nil {
-			return Output{}, "", err
-		}
-		if err := repos.Ledger().Append(ctx, settlement.Entry); err != nil {
-			return Output{}, "", err
-		}
-	}
-	if err := transactions.Finish(ctx, settlement.Transaction); err != nil {
-		return Output{}, "", err
-	}
-	if err := u.publish(ctx, repos, in, settlement); err != nil {
+	attempt := application.Attempt{Number: 1, ExpiresAt: u.deps.Pending.ExpiresAt(pending.CreatedAt())}
+	if err := u.writer.Write(ctx, repos, locked, settlement, attempt, in.CausationID); err != nil {
 		return Output{}, "", err
 	}
 
 	outcome := OutcomeProcessed
-	if settlement.Transaction.Status() == wager.StatusRejected {
+	switch settlement.Transaction.Status() {
+	case wager.StatusRejected:
 		outcome = OutcomeRejected
+	case wager.StatusPendingReference:
+		outcome = OutcomePending
 	}
 	return Output{Transaction: settlement.Transaction}, outcome, nil
 }
@@ -263,7 +265,7 @@ func (u *UseCase) settle(ctx context.Context, transactions application.Transacti
 	if err != nil {
 		return wager.Settlement{}, err
 	}
-	return pending.SettleAgainst(ref, locked, u.deps.NewID(), u.deps.Now())
+	return pending.SettleAgainst(ref, locked, u.deps.NewID(), u.deps.Now(), true)
 }
 
 // rejectUnknownWallet stores the Rejection WALLET_NOT_FOUND. There is no wallet to
@@ -281,7 +283,7 @@ func (u *UseCase) rejectUnknownWallet(ctx context.Context, repos application.Rep
 	if !claimed {
 		return u.storedAfterLosingTheClaim(ctx, repos.Transactions(), pending)
 	}
-	if err := u.publish(ctx, repos, in, wager.Settlement{Transaction: rejected}); err != nil {
+	if err := u.writer.Publish(ctx, repos, wager.Settlement{Transaction: rejected}, in.CausationID); err != nil {
 		return Output{}, "", err
 	}
 	return Output{Transaction: rejected}, OutcomeRejected, nil
@@ -324,57 +326,6 @@ func replayOrConflict(stored, pending wager.Transaction) (Output, Outcome, error
 	return Output{Transaction: stored, IdempotentReplay: true}, OutcomeReplayed, nil
 }
 
-// publish writes the events of a settlement to the outbox, in the same unit of work.
-func (u *UseCase) publish(ctx context.Context, repos application.Repositories, in Input, s wager.Settlement) error {
-	tx := s.Transaction
-	external := tx.External()
-	meta := func() event.Meta {
-		return event.Meta{EventID: u.deps.NewID(), CorrelationID: tx.CorrelationID(), CausationID: in.CausationID, OccurredAt: tx.UpdatedAt()}
-	}
-
-	var events []event.Event
-	if tx.Status() == wager.StatusRejected {
-		rejected, err := event.NewWagerTransactionRejected(meta(), event.WagerTransactionRejectedData{
-			TransactionID: tx.ID(), WalletID: tx.RequestedWalletID(), PlayerID: tx.PlayerID(), Kind: tx.Kind(),
-			ProviderID: external.ProviderID, ExternalTransactionID: external.ExternalTransactionID,
-			RoundID: external.RoundID, GameID: external.GameID, Money: tx.Amount(), FailureCode: tx.FailureCode(),
-			ReferenceExternalTransactionID: external.ReferenceExternalTransactionID,
-		})
-		if err != nil {
-			return err
-		}
-		events = append(events, rejected)
-	} else {
-		result, _ := tx.Result()
-		processed, err := event.NewWagerTransactionProcessed(meta(), event.WagerTransactionProcessedData{
-			TransactionID: tx.ID(), WalletID: tx.WalletID(), PlayerID: tx.PlayerID(), Kind: tx.Kind(), Origin: tx.Origin(),
-			ProviderID: external.ProviderID, ExternalTransactionID: external.ExternalTransactionID,
-			RoundID: external.RoundID, GameID: external.GameID, ReferenceExternalTransactionID: external.ReferenceExternalTransactionID,
-			Money: tx.Amount(), Balance: result.Balance, WalletVersion: result.WalletVersion,
-		})
-		if err != nil {
-			return err
-		}
-		events = append(events, processed)
-	}
-	if s.Entry.IsValid() {
-		changed, err := event.NewWalletBalanceChanged(meta(), event.WalletBalanceChangedData{
-			WalletID: s.Wallet.ID(), TransactionID: tx.ID(), Direction: s.Entry.Direction(), Money: s.Entry.Amount(),
-			BalanceBefore: s.Entry.BalanceBefore(), BalanceAfter: s.Entry.BalanceAfter(), WalletVersion: s.Wallet.Version(),
-		})
-		if err != nil {
-			return err
-		}
-		events = append(events, changed)
-	}
-	for _, e := range events {
-		if err := repos.Outbox().Add(ctx, e); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // errorOutcome classifies an error that ended a request.
 func errorOutcome(err error) Outcome {
 	switch {
@@ -414,7 +365,7 @@ func (u *UseCase) log(ctx context.Context, in Input, out Output, outcome Outcome
 		}
 	}
 	switch outcome {
-	case OutcomeProcessed, OutcomeRejected, OutcomeReplayed, OutcomeDuplicateMessage:
+	case OutcomeProcessed, OutcomeRejected, OutcomePending, OutcomeReplayed, OutcomeDuplicateMessage:
 		u.deps.Logger.InfoContext(ctx, "wager request handled", attrs...)
 	case OutcomeKeyConflict, OutcomeDuplicateExternal, OutcomeMessageConflict, OutcomeInvalid:
 		u.deps.Logger.WarnContext(ctx, "wager request refused", append(attrs, slog.String("reason", outcomeReason(err)))...)

@@ -35,6 +35,17 @@ type consumerAPI struct {
 
 func startConsumerAPI(t *testing.T, tune func(*config.Consumer)) *consumerAPI {
 	t.Helper()
+	return startConsumerAPIWith(t, func(c *config.Config) {
+		if tune != nil {
+			tune(&c.SQS.Consumer)
+		}
+	})
+}
+
+// startConsumerAPIWith starts the application against queues of the test's own, after
+// letting the test change the configuration.
+func startConsumerAPIWith(t *testing.T, configure func(*config.Config)) *consumerAPI {
+	t.Helper()
 	client, err := infra.NewSQSClient(t.Context(), ls.Endpoint)
 	require.NoError(t, err)
 	queues := infra.CreateInputQueues(t.Context(), t, client, 3, queueVisibility)
@@ -44,8 +55,8 @@ func startConsumerAPI(t *testing.T, tune func(*config.Consumer)) *consumerAPI {
 			Workers: 2, BatchSize: 10, PollWait: time.Second, ProcessingTimeout: 2 * time.Second,
 			RetryBackoffBase: time.Second, RetryBackoffMax: 2 * time.Second,
 		}
-		if tune != nil {
-			tune(&c.SQS.Consumer)
+		if configure != nil {
+			configure(c)
 		}
 	})
 	return &consumerAPI{walletAPI: a, sqs: client, queues: queues}

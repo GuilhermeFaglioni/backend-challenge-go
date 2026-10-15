@@ -13,6 +13,9 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/openwallet"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/processwager"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/reconcile"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/resolvepending"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/faultinject"
 )
 
 // usecases wires the use cases to their adapters. The Invoke makes Fx build them at
@@ -34,8 +37,22 @@ var usecases = fx.Module("usecases",
 		func(reg *prometheus.Registry) *promrec.Wager { return promrec.NewWager(reg) },
 		func(w *promrec.Wager) processwager.Recorder { return w },
 		func(w *promrec.Wager) application.RetryObserver { return w },
-		func(uow application.UnitOfWork, rec processwager.Recorder, log *slog.Logger) *processwager.UseCase {
-			return processwager.New(processwager.Deps{UnitOfWork: uow, Recorder: rec, Logger: log, Now: time.Now, NewID: uuid.New})
+		func(cfg config.Config) application.PendingPolicy {
+			p := cfg.PendingReference
+			return application.PendingPolicy{MaxAttempts: p.MaxAttempts, TTL: p.TTL, BackoffBase: p.BackoffBase, BackoffMax: p.BackoffMax}
+		},
+		func(uow application.UnitOfWork, rec processwager.Recorder, policy application.PendingPolicy, log *slog.Logger) *processwager.UseCase {
+			return processwager.New(processwager.Deps{
+				UnitOfWork: uow, Recorder: rec, Logger: log, Now: time.Now, NewID: uuid.New, Pending: policy,
+				AfterPending: func() { faultinject.Hit(faultinject.PendingAfterCommit) },
+			})
+		},
+	),
+	fx.Provide(
+		func(reg *prometheus.Registry) *promrec.Pending { return promrec.NewPending(reg) },
+		func(p *promrec.Pending) resolvepending.Recorder { return p },
+		func(uow application.UnitOfWork, rec resolvepending.Recorder, policy application.PendingPolicy, log *slog.Logger) *resolvepending.UseCase {
+			return resolvepending.New(resolvepending.Deps{UnitOfWork: uow, Recorder: rec, Logger: log, Now: time.Now, NewID: uuid.New, Policy: policy})
 		},
 	),
 	fx.Provide(
@@ -45,5 +62,5 @@ var usecases = fx.Module("usecases",
 			return reconcile.New(reconcile.Deps{Auditor: auditor, Recorder: rec, Logger: log})
 		},
 	),
-	fx.Invoke(func(*openwallet.UseCase, *processwager.UseCase, *reconcile.UseCase) {}),
+	fx.Invoke(func(*openwallet.UseCase, *processwager.UseCase, *resolvepending.UseCase, *reconcile.UseCase) {}),
 )

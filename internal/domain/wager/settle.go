@@ -13,12 +13,17 @@ import (
 
 // Settlement is what applying a transaction to a wallet produced: the transaction in
 // its final state, the wallet afterwards (the same wallet if nothing moved) and the
-// Ledger Entry of the movement (invalid if nothing moved).
+// Ledger Entry of the movement (invalid if nothing moved). When the operation's
+// Reference is not there yet and the operation may wait for it, the transaction is
+// PENDING_REFERENCE instead, and nothing else changed.
 type Settlement struct {
 	Transaction Transaction
 	Wallet      wallet.Wallet
 	Entry       wallet.LedgerEntry
 }
+
+// Waiting reports whether the operation was left waiting for its Reference.
+func (s Settlement) Waiting() bool { return s.Transaction.status == StatusPendingReference }
 
 // Reference is what the operation's Reference resolved to, or that it resolved to
 // nothing: the zero value is "not found".
@@ -48,14 +53,17 @@ func (t Transaction) Settle(w wallet.Wallet, entryID uuid.UUID, at time.Time) (S
 	if t.external.ReferenceExternalTransactionID != "" || t.kind == KindRefund || t.kind == KindRollback {
 		return Settlement{}, ErrReferenceUnresolved
 	}
-	return t.settle(w, Reference{}, entryID, at)
+	return t.settle(w, Reference{}, entryID, at, false)
 }
 
 // SettleAgainst applies an operation that names a Reference: a WIN that points at its
 // BET, or a Reversal. On top of the rules of Settle, the Reference decides, in this
 // order (ARCHITECTURE.md, section 10):
 //
-//	not found, or still waiting      REFERENCE_NOT_FOUND (until references can be waited for)
+//	not found, or still pending      waits for it (PENDING_REFERENCE) while mayWait; when it
+//	                                 may not wait any more: REFERENCE_NOT_FOUND if the
+//	                                 Reference never appeared, REFERENCE_NOT_PROCESSED if it
+//	                                 appeared and never completed
 //	ended without success            REFERENCE_NOT_PROCESSED
 //	not a kind this can act on       REFERENCE_KIND_INVALID
 //	other player, wallet, currency
@@ -68,17 +76,17 @@ func (t Transaction) Settle(w wallet.Wallet, entryID uuid.UUID, at time.Time) (S
 // Reversal that would take the balance below zero is REVERSAL_INSUFFICIENT_FUNDS, told
 // apart from a BET's. Once the Reference is found, its id is kept on the transaction,
 // whatever the outcome.
-func (t Transaction) SettleAgainst(ref Reference, w wallet.Wallet, entryID uuid.UUID, at time.Time) (Settlement, error) {
+func (t Transaction) SettleAgainst(ref Reference, w wallet.Wallet, entryID uuid.UUID, at time.Time, mayWait bool) (Settlement, error) {
 	if t.external.ReferenceExternalTransactionID == "" {
 		return Settlement{}, ErrNoReference
 	}
 	if ref.Found && !ref.Transaction.IsValid() {
 		return Settlement{}, ErrUninitialized
 	}
-	return t.settle(w, ref, entryID, at)
+	return t.settle(w, ref, entryID, at, mayWait)
 }
 
-func (t Transaction) settle(w wallet.Wallet, ref Reference, entryID uuid.UUID, at time.Time) (Settlement, error) {
+func (t Transaction) settle(w wallet.Wallet, ref Reference, entryID uuid.UUID, at time.Time, mayWait bool) (Settlement, error) {
 	if !t.IsValid() || !w.IsValid() {
 		return Settlement{}, ErrUninitialized
 	}
@@ -108,6 +116,19 @@ func (t Transaction) settle(w wallet.Wallet, ref Reference, entryID uuid.UUID, a
 	// The direction of the movement. A Reversal takes it from what it reverses.
 	credit := t.kind == KindWin || t.kind == KindRefund
 	if t.external.ReferenceExternalTransactionID != "" {
+		if !ref.available() {
+			if mayWait {
+				return t.wait(w, at)
+			}
+			// It may not wait any more: say whether the Reference never came, or came and
+			// never completed.
+			code := FailureReferenceNotFound
+			if ref.Found {
+				code = FailureReferenceNotProcessed
+				t = t.resolvedTo(ref.Transaction)
+			}
+			return reject(code)
+		}
 		if code, refused := t.judge(ref); refused {
 			if ref.Found {
 				t = t.resolvedTo(ref.Transaction)
@@ -149,6 +170,26 @@ func (t Transaction) settle(w wallet.Wallet, ref Reference, entryID uuid.UUID, a
 	return Settlement{Transaction: processed, Wallet: next, Entry: entry}, nil
 }
 
+// available reports whether the Reference can be judged: it is there and has an
+// outcome, or ended without one. One that is not there, or is itself still waiting, can
+// only be waited for.
+func (r Reference) available() bool {
+	return r.Found && r.Transaction.status != StatusPending && r.Transaction.status != StatusPendingReference
+}
+
+// wait leaves the operation waiting for its Reference: PENDING_REFERENCE, with the wallet
+// and the ledger as they were. An operation already waiting stays as it is.
+func (t Transaction) wait(w wallet.Wallet, at time.Time) (Settlement, error) {
+	if t.status == StatusPendingReference {
+		return Settlement{Transaction: t, Wallet: w}, nil
+	}
+	waiting, err := t.AwaitReference(at)
+	if err != nil {
+		return Settlement{}, err
+	}
+	return Settlement{Transaction: waiting, Wallet: w}, nil
+}
+
 func (t Transaction) isReversal() bool { return t.kind == KindRefund || t.kind == KindRollback }
 
 // resolvedTo keeps the id of the Reference the operation resolved to.
@@ -160,13 +201,8 @@ func (t Transaction) resolvedTo(ref Transaction) Transaction {
 // judge applies the table of References and says which code refuses the operation,
 // if one does.
 func (t Transaction) judge(ref Reference) (FailureCode, bool) {
-	if !ref.Found {
-		return FailureReferenceNotFound, true
-	}
 	r := ref.Transaction
 	switch r.status {
-	case StatusPending, StatusPendingReference:
-		return FailureReferenceNotFound, true
 	case StatusRejected, StatusFailed:
 		return FailureReferenceNotProcessed, true
 	}
