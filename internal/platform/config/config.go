@@ -29,6 +29,40 @@ type Config struct {
 	Outbox   Outbox   `envPrefix:"OUTBOX_"`
 	// PendingReference tunes the wait of an operation for a Reference that has not arrived.
 	PendingReference PendingReference `envPrefix:"PENDING_REFERENCE_"`
+	// Retention removes old inbox and outbox rows.
+	Retention Retention `envPrefix:"RETENTION_"`
+}
+
+// Retention is how long the inbox and the outbox keep rows that have done their job. The
+// database refuses anything below its floors (7 days for the inbox, 1 day for the outbox),
+// and so does this configuration.
+type Retention struct {
+	Inbox     time.Duration `env:"INBOX" envDefault:"336h"`  // 14 days
+	Outbox    time.Duration `env:"OUTBOX" envDefault:"168h"` // 7 days
+	Interval  time.Duration `env:"INTERVAL" envDefault:"1h"`
+	BatchSize int           `env:"BATCH_SIZE" envDefault:"10000"`
+}
+
+const (
+	minInboxRetention  = 7 * 24 * time.Hour
+	minOutboxRetention = 24 * time.Hour
+)
+
+func (r Retention) validate() []error {
+	var errs []error
+	if r.Inbox < minInboxRetention {
+		errs = append(errs, fmt.Errorf("RETENTION_INBOX must be at least %s: the inbox has to remember a message longer than the queue can deliver it again", minInboxRetention))
+	}
+	if r.Outbox < minOutboxRetention {
+		errs = append(errs, fmt.Errorf("RETENTION_OUTBOX must be at least %s", minOutboxRetention))
+	}
+	if r.Interval <= 0 {
+		errs = append(errs, errors.New("RETENTION_INTERVAL must be positive"))
+	}
+	if r.BatchSize < 1 {
+		errs = append(errs, errors.New("RETENTION_BATCH_SIZE must be at least 1"))
+	}
+	return errs
 }
 
 type Database struct {
@@ -207,6 +241,7 @@ func (c Config) Validate() error {
 	errs = append(errs, c.SQS.Consumer.Credentials.validate("SQS_CONSUMER_")...)
 	errs = append(errs, c.SQS.Publisher.validate("SQS_PUBLISHER_")...)
 	errs = append(errs, c.PendingReference.validate()...)
+	errs = append(errs, c.Retention.validate()...)
 	for _, origin := range c.CORSAllowedOrigins {
 		if err := validateOrigin(origin); err != nil {
 			errs = append(errs, fmt.Errorf("CORS_ALLOWED_ORIGINS: %q: %w", origin, err))

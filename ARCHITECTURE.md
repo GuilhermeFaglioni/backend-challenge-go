@@ -223,13 +223,13 @@ Constraints:
 
 ### `inbox`
 
-`(consumer_name, message_id)` como chave primária, `payload_hash` (SHA-256 em hexadecimal minúsculo, verificado por `CHECK`), `received_at` e `completed_at` (nulo só dentro da transação que trata a mensagem: como a linha e o que a mensagem causou confirmam juntos, uma linha visível para outra transação significa "tratada"). O papel da aplicação só insere e completa: `REVOKE UPDATE, DELETE, TRUNCATE` e `GRANT UPDATE (completed_at)`, de modo que ela não reescreve o que uma mensagem era nem esquece uma mensagem (esquecer deixaria uma mensagem ser tratada duas vezes). A inbox não tem expiração: o crescimento é de uma linha por mensagem e a política de retenção fica como trabalho futuro.
+`(consumer_name, message_id)` como chave primária, `payload_hash` (SHA-256 em hexadecimal minúsculo, verificado por `CHECK`), `received_at` e `completed_at` (nulo só dentro da transação que trata a mensagem: como a linha e o que a mensagem causou confirmam juntos, uma linha visível para outra transação significa "tratada"). O papel da aplicação só insere e completa: `REVOKE UPDATE, DELETE, TRUNCATE` e `GRANT UPDATE (completed_at)`, de modo que ela não reescreve o que uma mensagem era nem esquece uma mensagem (esquecer deixaria uma mensagem ser tratada duas vezes). A retenção (migration `000013`) apaga as mensagens concluídas há mais de `RETENTION_INBOX` (14 dias), nunca abaixo de 7: a fila de entrada só reentrega uma mensagem por até 4 dias, então a inbox precisa lembrá-la por mais tempo que isso, senão uma reentrega seria tratada de novo.
 
 ### `outbox`
 
 `event_id UUID PK`, `aggregate_id` (a carteira), `event_type`, `version`, `payload JSONB` (snapshot imutável, sempre um objeto), `correlation_id`, `causation_id`, `occurred_at`, `published_at`, mais o estado de publicação: `seq` (identidade gerada, a ordem de escrita), `attempts`, `next_attempt_at`, `locked_until` e `last_error`. Índices parciais nos não publicados: por `occurred_at` (a defasagem), por `seq` (o que está pendente) e por `(aggregate_id, seq)` (o que vem antes na mesma carteira). O trigger `outbox_guard` recusa qualquer mudança no conteúdo do evento e qualquer mudança em um evento já publicado.
 
-### Estado atual do schema (migrations 000002 a 000012)
+### Estado atual do schema (migrations 000002 a 000013)
 
 | Migration | Conteúdo |
 | --- | --- |
@@ -244,6 +244,7 @@ Constraints:
 | `000010_reversal_index` | O índice único parcial `wager_transactions_one_reversal_per_reference` (uma referência recebe no máximo um `REFUND`/`ROLLBACK` processado, qualquer que seja o tipo) e o `CHECK` de que uma reversão processada nomeia a referência resolvida (sem ele, `NULL` escaparia do índice). |
 | `000011_pending_reference` | As colunas que agendam uma operação à espera da referência (`attempts`, `next_attempt_at`, `locked_until`, `expires_at`), o `CHECK` de que `PENDING_REFERENCE` sempre tem agenda (sem ela nenhum worker viria buscá-la) e os dois índices parciais que o worker usa (`next_attempt_at` das pendentes e `created_at` das que ficaram em `PENDING`). |
 | `000012_pending_failures` | `error_count` e `last_error` (até 500 caracteres) na `wager_transactions`: quantas vezes uma operação em espera não pôde ser tentada por um defeito, e por quê. |
+| `000013_retention` | As funções `prune_inbox` e `prune_outbox` (`SECURITY DEFINER`, executáveis só pelo papel da aplicação), que apagam em lotes as mensagens concluídas e os eventos publicados mais antigos que o pedido e recusam abaixo dos pisos (7 dias e 1 dia); o `REVOKE DELETE` da outbox, para que a aplicação só apague por elas; e o índice parcial dos eventos publicados. |
 
 Os triggers de proteção levantam `check_violation` (`23514`), e o do ledger levanta `restrict_violation` (`23001`). Cada constraint e cada trigger tem um teste de integração que tenta violá-lo por SQL direto (`test/integration/schema_test.go`) e que foi visto falhar sem ele. O `.down.sql` do ledger declara que apaga todo o histórico financeiro.
 
@@ -766,7 +767,7 @@ Desvios do desenho original (decididos durante a construção):
 Limitações conhecidas:
 
 - Escala fixa de duas casas (sem moedas de outra escala).
-- A inbox e a outbox não têm política de retenção: crescem uma linha por mensagem e por evento. Para produção seria preciso arquivar ou apagar as concluídas depois de uma janela.
+- **Retenção:** um worker por instância (`internal/adapters/retention`) chama, a cada `RETENTION_INTERVAL` (1h), as funções de retenção do banco, em lotes de `RETENTION_BATCH_SIZE` (10.000) e no máximo 100 lotes por rodada: mensagens concluídas da inbox com mais de `RETENTION_INBOX` (14 dias; piso de 7) e eventos publicados da outbox com mais de `RETENTION_OUTBOX` (7 dias; piso de 1). O papel da aplicação não apaga nada dessas tabelas diretamente: só pelas funções, que recusam abaixo dos pisos. Várias instâncias rodando ao mesmo tempo só repartem o trabalho. Métricas `retention_pruned_total{table}` e `retention_errors_total`. Os eventos apagados deixam de existir para auditoria; quem precisar do histórico guarda o que consome da fila de eventos.
 - A reconciliação soma o ledger inteiro da carteira (leitura em um snapshot): o custo cresce com o número de lançamentos; não há saldo incremental nem checkpoint.
 - O worker de referências e o publicador da outbox consultam o banco por *polling* (500ms quando não há nada a fazer); a latência de uma resolução é o intervalo da tentativa, não imediata. Os medidores `pending_references` e `outbox_lag_seconds` são atualizados a cada 2s.
 - **Vazão da outbox por carteira:** a ordem por carteira só deixa reservar um evento de cada carteira por vez, então uma carteira é publicada a cerca de 20 eventos/s (medido). Uma carteira que gere eventos mais rápido do que isso (cada operação gera dois) acumula fila e atraso enquanto durar a carga; nada se perde e a ordem se mantém. Reservar e enviar vários eventos consecutivos da mesma carteira no mesmo lote removeria o limite (ver [docs/LOAD_TEST.md](docs/LOAD_TEST.md)).
@@ -780,7 +781,7 @@ Limitações conhecidas:
 
 Fora do escopo (diferenciais opcionais): partidas dobradas, tracing com OpenTelemetry e dashboards. O teste de carga (R22) foi feito: comando, método, ambiente e resultados em [docs/LOAD_TEST.md](docs/LOAD_TEST.md). Ele achou, e este mesmo trabalho corrigiu, uma espera ociosa do publicador da outbox que limitava cada carteira a ~2 eventos/s.
 
-Trabalho não concluído: nada do que o enunciado exige. Ficaram de fora os diferenciais opcionais acima (partidas dobradas, tracing e dashboards) e a retenção da inbox e da outbox (ver as limitações). A entrega, com as evidências por critério, os oito cenários e as decisões finais, está em [docs/DELIVERY.md](docs/DELIVERY.md).
+Trabalho não concluído: nada do que o enunciado exige. Ficaram de fora os diferenciais opcionais acima (partidas dobradas, tracing e dashboards) (ver as limitações). A entrega, com as evidências por critério, os oito cenários e as decisões finais, está em [docs/DELIVERY.md](docs/DELIVERY.md).
 
 ## 18. CI/CD
 

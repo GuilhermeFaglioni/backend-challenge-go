@@ -86,19 +86,18 @@ func TestApplicationRolePrivileges(t *testing.T) {
 		require.Equal(t, 1, count)
 		_, err = app.Exec(ctx, `INSERT INTO outbox (event_id, aggregate_id, event_type, version, payload, occurred_at) VALUES (gen_random_uuid(), $1, 'X', 1, '{}', now())`, wallet)
 		require.NoError(t, err)
-		_, err = app.Exec(ctx, `DELETE FROM outbox`)
-		require.NoError(t, err)
 	})
 
 	denied := map[string]string{
-		"cannot truncate":                    `TRUNCATE wallets`,
-		"cannot drop a table":                `DROP TABLE wallets`,
-		"cannot create a table":              `CREATE TABLE intruder (id int)`,
-		"cannot alter a table":               `ALTER TABLE wallets ADD COLUMN extra int`,
-		"cannot update the ledger":           `UPDATE wallet_ledger_entries SET created_at = now()`,
-		"cannot delete from the ledger":      `DELETE FROM wallet_ledger_entries`,
-		"cannot truncate the ledger":         `TRUNCATE wallet_ledger_entries`,
-		"cannot disable the ledger triggers": `ALTER TABLE wallet_ledger_entries DISABLE TRIGGER ALL`,
+		"cannot truncate":                                             `TRUNCATE wallets`,
+		"cannot drop a table":                                         `DROP TABLE wallets`,
+		"cannot create a table":                                       `CREATE TABLE intruder (id int)`,
+		"cannot alter a table":                                        `ALTER TABLE wallets ADD COLUMN extra int`,
+		"cannot update the ledger":                                    `UPDATE wallet_ledger_entries SET created_at = now()`,
+		"cannot delete from the ledger":                               `DELETE FROM wallet_ledger_entries`,
+		"cannot truncate the ledger":                                  `TRUNCATE wallet_ledger_entries`,
+		"cannot disable the ledger triggers":                          `ALTER TABLE wallet_ledger_entries DISABLE TRIGGER ALL`,
+		"deletes from the outbox only through the retention function": `DELETE FROM outbox`,
 	}
 	for name, statement := range denied {
 		t.Run(name, func(t *testing.T) {
