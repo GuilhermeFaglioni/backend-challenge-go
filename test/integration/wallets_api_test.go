@@ -24,6 +24,7 @@ type walletAPI struct {
 	client    *contractClient
 	strict    *contractClient
 	pool      *pgxpool.Pool
+	ownerDSN  string
 	logs      *logBuffer
 	internal  string // tokens
 	provider  string // provider-a
@@ -48,7 +49,7 @@ func startWalletAPI(t *testing.T) walletAPI {
 	base := "http://" + cfg.HTTPAddr
 	strict := newContractClient(t, base)
 	return walletAPI{
-		base: base, strict: strict, client: strict.lenient(), pool: running.Pool, logs: running.Logs,
+		base: base, strict: strict, client: strict.lenient(), pool: running.Pool, ownerDSN: db.OwnerDSN, logs: running.Logs,
 		internal: internalToken, provider: providerToken, providerB: providerBToken,
 	}
 }

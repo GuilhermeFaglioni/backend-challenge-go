@@ -12,6 +12,7 @@ import (
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/openwallet"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/processwager"
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application/reconcile"
 )
 
 // usecases wires the use cases to their adapters. The Invoke makes Fx build them at
@@ -37,5 +38,12 @@ var usecases = fx.Module("usecases",
 			return processwager.New(processwager.Deps{UnitOfWork: uow, Recorder: rec, Logger: log, Now: time.Now, NewID: uuid.New})
 		},
 	),
-	fx.Invoke(func(*openwallet.UseCase, *processwager.UseCase) {}),
+	fx.Provide(
+		func(reg *prometheus.Registry) *promrec.Reconcile { return promrec.NewReconcile(reg) },
+		func(r *promrec.Reconcile) reconcile.Recorder { return r },
+		func(auditor application.LedgerAuditor, rec reconcile.Recorder, log *slog.Logger) *reconcile.UseCase {
+			return reconcile.New(reconcile.Deps{Auditor: auditor, Recorder: rec, Logger: log})
+		},
+	),
+	fx.Invoke(func(*openwallet.UseCase, *processwager.UseCase, *reconcile.UseCase) {}),
 )

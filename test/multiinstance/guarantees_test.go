@@ -113,8 +113,31 @@ func (g *guarantees) bet(t *testing.T, instance *infra.Instance, w wallet, exter
 	return g.post(t, instance, g.provider, "/wagering/transactions", key, body)
 }
 
+// reconcile asks a process, through the API, to check the wallet's books.
+func (g *guarantees) reconcile(t *testing.T, instance *infra.Instance, w wallet) (stored, calculated string, consistent bool) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+instance.Addr+"/wallets/"+w.id+"/reconciliation", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+g.h.token)
+	resp, err := g.client.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(data))
+	var result struct {
+		StoredBalance     struct{ Amount string } `json:"storedBalance"`
+		CalculatedBalance struct{ Amount string } `json:"calculatedBalance"`
+		Consistent        bool                    `json:"consistent"`
+	}
+	require.NoError(t, json.Unmarshal(data, &result))
+	return result.StoredBalance.Amount, result.CalculatedBalance.Amount, result.Consistent
+}
+
 // books checks one wallet: the stored balance is the credits minus the debits of its
 // ledger, it is not negative, and each ledger entry starts where the previous one ended.
+// It then has a process, other than the one that wrote last, say the same through the
+// reconciliation endpoint.
 func (g *guarantees) books(t *testing.T, w wallet) (balance, debits int64) {
 	t.Helper()
 	var credits int64
@@ -135,6 +158,10 @@ func (g *guarantees) books(t *testing.T, w wallet) (balance, debits int64) {
 			FROM wallet_ledger_entries WHERE wallet_id = $1 AND direction = 'DEBIT') c
 		WHERE previous_after IS NOT NULL AND previous_after <> balance_before_minor`, w.id).Scan(&broken))
 	require.Zero(t, broken, "wallet %s: the debits do not chain", w.id)
+
+	stored, calculated, consistent := g.reconcile(t, g.on(int(version)), w)
+	require.True(t, consistent, "wallet %s: the reconciliation endpoint finds the books apart (stored %s, calculated %s)", w.id, stored, calculated)
+	require.Equal(t, fmt.Sprintf("%d.%02d", balance/100, balance%100), stored, "wallet %s: the endpoint reads the balance the test read", w.id)
 	return balance, debits
 }
 

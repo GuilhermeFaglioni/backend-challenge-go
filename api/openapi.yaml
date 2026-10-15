@@ -359,6 +359,51 @@ paths:
         '500': { $ref: '#/components/responses/Internal' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
+  /wallets/{walletId}/reconciliation:
+    post:
+      tags: [Wallets]
+      operationId: reconcileWallet
+      summary: Check a wallet's books
+      description: |
+        Role `internal`. Rebuilds the balance from the ledger (credits minus debits, the
+        opening credit included) and compares it with the balance the wallet stores. The
+        two are read in one consistent snapshot, so writes going on at the same time cannot
+        make them disagree. Nothing is changed.
+
+        The answer is `200` also when the books do not agree: a divergence is what the
+        check found, not a problem with the request. It is reported in `consistent: false`
+        and `difference`, logged as an error and counted in `reconciliation_divergences_total`.
+      parameters:
+        - name: walletId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The result of the check.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconciliationResult'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: There is no wallet with that id.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /health/live:
     get:
       tags: [Operations]
@@ -626,6 +671,45 @@ components:
           type: string
           format: date-time
           description: When the transaction reached its final state; absent while it has not.
+
+    SignedMoney:
+      type: object
+      description: |
+        Like `Money`, but the amount may be negative. Only a difference between two amounts
+        can be, never a balance or an amount sent to the API.
+      required: [amount, currency]
+      additionalProperties: false
+      properties:
+        amount:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)\.[0-9]{2}$'
+          example: '-3.00'
+        currency:
+          type: string
+          enum: [BRL, USD, EUR]
+
+    ReconciliationResult:
+      type: object
+      description: |
+        `calculatedBalance` is the credits minus the debits of the ledger, the opening
+        included. `difference` is the stored balance minus the calculated one: zero when
+        the books agree, negative when the ledger explains more than is stored.
+      required: [walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries]
+      properties:
+        walletId: { type: string, format: uuid }
+        storedBalance:
+          $ref: '#/components/schemas/Money'
+        calculatedBalance:
+          $ref: '#/components/schemas/SignedMoney'
+        difference:
+          $ref: '#/components/schemas/SignedMoney'
+        consistent:
+          type: boolean
+        checkedEntries:
+          type: integer
+          format: int64
+          minimum: 0
+          description: How many ledger entries were added up.
 
     LedgerEntry:
       type: object
