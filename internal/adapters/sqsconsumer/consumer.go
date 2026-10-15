@@ -275,6 +275,8 @@ func permanent(err error) (Reason, bool) {
 		return ReasonInvalid, true
 	case errors.Is(err, processwager.ErrUnsupportedKind):
 		return ReasonUnsupportedKind, true
+	case errors.Is(err, processwager.ErrReferenceNotSupported):
+		return ReasonUnsupportedRef, true
 	case errors.Is(err, processwager.ErrIdempotencyKeyConflict):
 		return ReasonKeyConflict, true
 	case errors.Is(err, processwager.ErrDuplicateExternalTransaction):

@@ -10,7 +10,7 @@
 //     at all;
 //   - a business refusal (a Rejection) is stored, final and replayable.
 //
-// Only the BET is processed so far; the other kinds arrive with their tickets.
+// BET, WIN and LOSS are processed; the reversals arrive with their tickets.
 package processwager
 
 import (
@@ -35,6 +35,10 @@ var (
 	ErrInvalidInput = errors.New("processwager: invalid input")
 	// ErrUnsupportedKind: a valid kind this use case does not process yet.
 	ErrUnsupportedKind = errors.New("processwager: this kind of operation is not processed yet")
+	// ErrReferenceNotSupported: a WIN that names a Reference. Resolving References
+	// arrives with the reversals; until then the operation is refused before anything
+	// is stored.
+	ErrReferenceNotSupported = errors.New("processwager: operations that name a reference are not processed yet")
 	// ErrIdempotencyKeyConflict: the key was already used for a request with other
 	// content.
 	ErrIdempotencyKeyConflict = errors.New("processwager: the idempotency key was used with a different request")
@@ -138,8 +142,13 @@ func (u *UseCase) execute(ctx context.Context, in Input) (Output, Outcome, error
 	if err != nil {
 		return Output{}, OutcomeInvalid, fmt.Errorf("%w: %w", ErrInvalidInput, err)
 	}
-	if request.Kind() != wager.KindBet {
+	switch request.Kind() {
+	case wager.KindBet, wager.KindWin, wager.KindLoss:
+	default:
 		return Output{}, OutcomeUnsupported, fmt.Errorf("%w: %s", ErrUnsupportedKind, request.Kind())
+	}
+	if in.Request.ReferenceExternalTransactionID != "" {
+		return Output{}, OutcomeUnsupported, ErrReferenceNotSupported
 	}
 	now := u.deps.Now()
 	pending, err := wager.New(wager.NewParams{
@@ -424,6 +433,8 @@ func outcomeReason(err error) string {
 		return "message content conflict"
 	case errors.Is(err, ErrUnsupportedKind):
 		return "unsupported kind"
+	case errors.Is(err, ErrReferenceNotSupported):
+		return "unsupported reference"
 	case errors.Is(err, ErrInvalidInput):
 		return "invalid input"
 	}

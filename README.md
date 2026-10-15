@@ -74,7 +74,7 @@ Consultar o resultado, pelo id ou pelo id externo (um provedor só enxerga as pr
 curl -s localhost:8081/providers/provider-a/wagering/transactions/transaction-123 -H "Authorization: Bearer $PROVIDER_TOKEN"
 ```
 
-Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. Por enquanto só o tipo `BET` é processado.
+Repetir o mesmo comando devolve o resultado guardado com `"idempotentReplay":true`; mudar o valor mantendo a chave dá `409`. `BET` debita, `WIN` credita e `LOSS` só registra o resultado (valor `0.00`, sem lançamento e sem mudar a versão da carteira). Um `WIN` que cita `referenceExternalTransactionId`, e as reversões (`REFUND` e `ROLLBACK`), ainda respondem `400`.
 
 A mesma operação também entra pela fila `wager-transactions.fifo` (corpo no formato da seção 10 do enunciado, `MessageGroupId` = id da carteira). O resultado é o mesmo do HTTP, inclusive a idempotência: a mensagem é apagada da fila só depois do commit, o que não pode ser tratado (JSON inválido, tipo desconhecido, campo inválido, chave ou `messageId` reutilizados com outro conteúdo) vai para `wager-transactions-dlq.fifo` com o motivo em `errorReason`, e uma falha do momento deixa a mensagem na fila para outra tentativa, com espera crescente.
 

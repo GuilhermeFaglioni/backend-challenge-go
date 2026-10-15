@@ -161,16 +161,11 @@ func TestSettlingIsRefusedWhenItCannotBeTheRightWalletOrTransaction(t *testing.T
 	})
 }
 
-func TestOtherKindsAreNotSettledYet(t *testing.T) {
-	for _, kind := range []wager.Kind{wager.KindWin, wager.KindLoss, wager.KindRefund, wager.KindRollback} {
+func TestReversalsAreNotSettledYet(t *testing.T) {
+	for _, kind := range []wager.Kind{wager.KindRefund, wager.KindRollback} {
 		p := betParams(t)
 		p.Kind = kind
-		switch kind {
-		case wager.KindLoss:
-			p.Amount = brl(t, 0)
-		case wager.KindRefund, wager.KindRollback:
-			p.ReferenceExternalTransactionID = "transaction-100"
-		}
+		p.ReferenceExternalTransactionID = "transaction-100"
 		tx, err := wager.New(wager.NewParams{ID: uuid.New(), Request: newRequest(t, p), IdempotencyKey: "k", CorrelationID: "c", At: at})
 		require.NoError(t, err)
 		_, err = tx.Settle(walletOf(t, 10000), uuid.New(), settleAt)
@@ -178,6 +173,112 @@ func TestOtherKindsAreNotSettledYet(t *testing.T) {
 	}
 	_, err := pendingOpening(t).Settle(walletOf(t, 10000), uuid.New(), settleAt)
 	require.ErrorIs(t, err, wager.ErrKindNotSupported)
+}
+
+func operationOf(t *testing.T, kind wager.Kind, minor int64) wager.Transaction {
+	t.Helper()
+	p := betParams(t)
+	p.Kind = kind
+	p.Amount = brl(t, minor)
+	tx, err := wager.New(wager.NewParams{ID: uuid.New(), Request: newRequest(t, p), IdempotencyKey: "k-" + uuid.NewString(), CorrelationID: "c", At: at})
+	require.NoError(t, err)
+	return tx
+}
+
+func TestAWinCreditsTheWalletAndIsProcessedWithTheBalanceItLeft(t *testing.T) {
+	tx, w := operationOf(t, wager.KindWin, 4000), walletOf(t, 10000)
+	entryID := uuid.New()
+
+	s, err := tx.Settle(w, entryID, settleAt)
+	require.NoError(t, err)
+
+	require.Equal(t, wager.StatusProcessed, s.Transaction.Status())
+	result, _ := s.Transaction.Result()
+	require.Equal(t, int64(14000), result.Balance.Minor())
+	require.Equal(t, int64(3), result.WalletVersion)
+	require.Equal(t, int64(14000), s.Wallet.Balance().Minor())
+	require.Equal(t, int64(3), s.Wallet.Version())
+	last, _ := s.Wallet.LastTransactionID()
+	require.Equal(t, tx.ID(), last)
+
+	require.Equal(t, entryID, s.Entry.ID())
+	require.Equal(t, domainwallet.DirectionCredit, s.Entry.Direction())
+	require.Equal(t, int64(4000), s.Entry.Amount().Minor())
+	require.Equal(t, int64(10000), s.Entry.BalanceBefore().Minor())
+	require.Equal(t, int64(14000), s.Entry.BalanceAfter().Minor())
+	require.Equal(t, int64(10000), w.Balance().Minor(), "the wallet it was applied to is not changed")
+}
+
+func TestAWinIntoAnEmptyWalletWorks(t *testing.T) {
+	s, err := operationOf(t, wager.KindWin, 1).Settle(walletOf(t, 0), uuid.New(), settleAt)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), s.Wallet.Balance().Minor())
+}
+
+func TestAWinThatTheBalanceCouldNotHoldIsARejectionAndMovesNothing(t *testing.T) {
+	tx, w := operationOf(t, wager.KindWin, 1), walletOf(t, math.MaxInt64)
+
+	s, err := tx.Settle(w, uuid.New(), settleAt)
+
+	require.NoError(t, err, "a limit of the data is a Rejection, not an error of the call")
+	require.Equal(t, wager.StatusRejected, s.Transaction.Status())
+	require.Equal(t, wager.FailureBalanceLimitExceeded, s.Transaction.FailureCode())
+	require.False(t, s.Entry.IsValid())
+	require.Equal(t, w, s.Wallet)
+
+	s, err = operationOf(t, wager.KindWin, 1).Settle(walletOf(t, math.MaxInt64-1), uuid.New(), settleAt)
+	require.NoError(t, err)
+	require.Equal(t, wager.StatusProcessed, s.Transaction.Status(), "one below the limit still fits")
+}
+
+func TestALossMovesNothingAndTheWalletKeepsItsVersion(t *testing.T) {
+	tx, w := operationOf(t, wager.KindLoss, 0), walletOf(t, 10000)
+
+	s, err := tx.Settle(w, uuid.New(), settleAt)
+	require.NoError(t, err)
+
+	require.Equal(t, wager.StatusProcessed, s.Transaction.Status())
+	result, _ := s.Transaction.Result()
+	require.Equal(t, int64(10000), result.Balance.Minor(), "it reports the balance as it stands")
+	require.Equal(t, int64(2), result.WalletVersion, "and the version it stands at")
+	require.False(t, s.Entry.IsValid(), "no Ledger Entry")
+	require.Equal(t, w, s.Wallet, "the wallet is the very same")
+	require.Equal(t, int64(2), s.Wallet.Version())
+	before, _ := w.LastTransactionID()
+	after, _ := s.Wallet.LastTransactionID()
+	require.Equal(t, before, after)
+}
+
+func TestALossIsCheckedAgainstTheWalletToo(t *testing.T) {
+	s, err := operationOf(t, wager.KindLoss, 0).Settle(walletOf(t, 0), uuid.New(), settleAt)
+	require.NoError(t, err)
+	require.Equal(t, wager.StatusProcessed, s.Transaction.Status(), "an empty wallet can lose")
+}
+
+func TestWinsAndLossesAreRefusedForTheWrongPlayerOrCurrency(t *testing.T) {
+	for _, kind := range []wager.Kind{wager.KindWin, wager.KindLoss} {
+		minor := int64(100)
+		if kind == wager.KindLoss {
+			minor = 0
+		}
+		other := domainwallet.State{ID: wallet, PlayerID: uuid.New(), Balance: brl(t, 500), Version: 2, LastTransactionID: uuid.New(), CreatedAt: at, UpdatedAt: at}
+		stranger, err := domainwallet.Rehydrate(other)
+		require.NoError(t, err)
+		s, err := operationOf(t, kind, minor).Settle(stranger, uuid.New(), settleAt)
+		require.NoError(t, err, kind)
+		require.Equal(t, wager.FailurePlayerMismatch, s.Transaction.FailureCode(), kind)
+		require.False(t, s.Entry.IsValid(), kind)
+		require.Equal(t, stranger, s.Wallet, kind)
+
+		usd, err := money.FromMinor(500, money.USD)
+		require.NoError(t, err)
+		abroad, err := domainwallet.Rehydrate(domainwallet.State{ID: wallet, PlayerID: player, Balance: usd, Version: 2, LastTransactionID: uuid.New(), CreatedAt: at, UpdatedAt: at})
+		require.NoError(t, err)
+		s, err = operationOf(t, kind, minor).Settle(abroad, uuid.New(), settleAt)
+		require.NoError(t, err, kind)
+		require.Equal(t, wager.FailureCurrencyMismatch, s.Transaction.FailureCode(), kind)
+		require.False(t, s.Entry.IsValid(), kind)
+	}
 }
 
 func TestAnOverflowingDebitIsAnErrorNotARejection(t *testing.T) {

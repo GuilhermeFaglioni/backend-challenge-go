@@ -135,7 +135,8 @@ func (g *guarantees) reconcile(t *testing.T, instance *infra.Instance, w wallet)
 }
 
 // books checks one wallet: the stored balance is the credits minus the debits of its
-// ledger, it is not negative, and each ledger entry starts where the previous one ended.
+// ledger, it is not negative, and each ledger entry starts where the previous one ended
+// (in the order the database wrote them).
 // It then has a process, other than the one that wrote last, say the same through the
 // reconciliation endpoint.
 func (g *guarantees) books(t *testing.T, w wallet) (balance, debits int64) {
@@ -154,10 +155,10 @@ func (g *guarantees) books(t *testing.T, w wallet) (balance, debits int64) {
 	var broken int
 	require.NoError(t, g.h.owner.QueryRow(t.Context(), `
 		SELECT count(*) FROM (
-			SELECT balance_before_minor, lag(balance_after_minor) OVER (ORDER BY balance_before_minor DESC) AS previous_after
-			FROM wallet_ledger_entries WHERE wallet_id = $1 AND direction = 'DEBIT') c
+			SELECT balance_before_minor, lag(balance_after_minor) OVER (ORDER BY seq) AS previous_after
+			FROM wallet_ledger_entries WHERE wallet_id = $1) c
 		WHERE previous_after IS NOT NULL AND previous_after <> balance_before_minor`, w.id).Scan(&broken))
-	require.Zero(t, broken, "wallet %s: the debits do not chain", w.id)
+	require.Zero(t, broken, "wallet %s: the entries do not chain, each starting where the one before ended", w.id)
 
 	stored, calculated, consistent := g.reconcile(t, g.on(int(version)), w)
 	require.True(t, consistent, "wallet %s: the reconciliation endpoint finds the books apart (stored %s, calculated %s)", w.id, stored, calculated)
@@ -396,4 +397,47 @@ func TestAfterRestartingEveryInstanceEverythingReplaysAndTheBalanceIsUnchanged(t
 	require.Equal(t, http.StatusOK, next.status)
 	require.Equal(t, "40.00", next.answer.Balance.Amount)
 	g.books(t, w)
+}
+
+// --- wins and losses ------------------------------------------------------------------
+
+func (g *guarantees) operation(t *testing.T, instance *infra.Instance, w wallet, externalID, kind, amount string) response {
+	t.Helper()
+	body := fmt.Sprintf(`{"providerId":"provider-a","externalTransactionId":%q,"playerId":%q,"walletId":%q,"roundId":"round-1","gameId":"game-1","kind":%q,"money":{"amount":%q,"currency":"BRL"}}`,
+		externalID, w.player, w.id, kind, amount)
+	return g.post(t, instance, g.provider, "/wagering/transactions", "provider-a:"+externalID, body)
+}
+
+// Bets, wins and losses sent to three processes at once, each of them also sent twice:
+// the wallet ends with exactly what the distinct operations say, the loss leaves its
+// version alone, and the books agree (books() asks another process to say so).
+func TestMixedOperationsAcrossThreeProcessesAddUpOnce(t *testing.T) {
+	g := startGuarantees(t)
+	w := g.open(t, g.on(0), "1000.00")
+	const rounds = 20
+
+	var wg sync.WaitGroup
+	for i := range rounds {
+		for k, op := range []struct{ kind, amount string }{{"BET", "10.00"}, {"WIN", "4.00"}, {"LOSS", "0.00"}} {
+			for copy := range 2 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					r := g.operation(t, g.on(i+k+copy), w, fmt.Sprintf("%s-%d", op.kind, i), op.kind, op.amount)
+					if r.status != http.StatusOK {
+						t.Errorf("%s-%d answered %d: %+v", op.kind, i, r.status, r.answer)
+					}
+				}()
+			}
+		}
+	}
+	wg.Wait()
+
+	balance, debits := g.books(t, w)
+	require.Equal(t, int64(100000-rounds*1000+rounds*400), balance)
+	require.Equal(t, rounds, g.debitEntries(t, w))
+	require.Equal(t, int64(rounds*1000), debits)
+	var version int64
+	require.NoError(t, g.h.owner.QueryRow(t.Context(), `SELECT version FROM wallets WHERE id = $1`, w.id).Scan(&version))
+	require.Equal(t, int64(1+rounds*2), version, "the opening, each bet and each win, once; no loss")
 }

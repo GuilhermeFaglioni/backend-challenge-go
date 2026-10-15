@@ -55,9 +55,13 @@ paths:
         `failureCode`. Sending it again returns the same `422`; to correct it, send a new
         operation with a new key and external id.
 
-        Only `BET` is processed so far: the other kinds are answered `400` until they are
-        delivered. `OPENING` is reserved to the internal opening of a wallet and is always
-        `400`.
+        `BET`, `WIN` and `LOSS` are processed. A `WIN` that names a
+        `referenceExternalTransactionId` is answered `400` until references are resolved, and
+        so are `REFUND` and `ROLLBACK`. `OPENING` is reserved to the internal opening of a
+        wallet and is always `400`.
+
+        A `LOSS` moves no money: it answers `200` with the wallet's balance, writes no
+        ledger entry and leaves the wallet's version as it was.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CorrelationId'
@@ -79,6 +83,28 @@ paths:
                   gameId: fortune-chimp
                   kind: BET
                   money: { amount: '25.00', currency: BRL }
+              win:
+                summary: A prize of 100.00 BRL
+                value:
+                  providerId: provider-a
+                  externalTransactionId: transaction-124
+                  playerId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  walletId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  roundId: round-987
+                  gameId: fortune-chimp
+                  kind: WIN
+                  money: { amount: '100.00', currency: BRL }
+              loss:
+                summary: A lost round, which moves nothing
+                value:
+                  providerId: provider-a
+                  externalTransactionId: transaction-125
+                  playerId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  walletId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+                  roundId: round-988
+                  gameId: fortune-chimp
+                  kind: LOSS
+                  money: { amount: '0.00', currency: BRL }
       responses:
         '200':
           description: The operation was processed.
@@ -569,7 +595,8 @@ components:
           type: string
           enum: [BET, WIN, LOSS, REFUND, ROLLBACK]
           description: |
-            `BET` debits. `WIN` credits. `LOSS` moves nothing and needs `0.00`. `REFUND` and
+            `BET` debits. `WIN` credits (a credit the balance could not hold is refused with
+            `BALANCE_LIMIT_EXCEEDED`). `LOSS` moves nothing and needs `0.00`. `REFUND` and
             `ROLLBACK` reverse an earlier operation and need `referenceExternalTransactionId`.
             `OPENING` is not accepted.
         money:
@@ -578,7 +605,9 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: Required for `REFUND` and `ROLLBACK`, optional for `WIN`, not allowed otherwise.
+          description: |
+            Required for `REFUND` and `ROLLBACK`, optional for `WIN`, not allowed otherwise.
+            Operations that name one are not processed yet and are answered `400`.
 
     ProcessedOperation:
       type: object
@@ -606,6 +635,7 @@ components:
             sent is at fault. Definitive: a business result that sending again does not change.
           enum:
             - INSUFFICIENT_FUNDS
+            - BALANCE_LIMIT_EXCEEDED
             - REVERSAL_INSUFFICIENT_FUNDS
             - WALLET_NOT_FOUND
             - CURRENCY_MISMATCH
@@ -654,6 +684,7 @@ components:
           description: Why the operation was rejected, or `INTERNAL_PERMANENT_FAILURE` for a failure. Present only for `REJECTED` and `FAILED`.
           enum:
             - INSUFFICIENT_FUNDS
+            - BALANCE_LIMIT_EXCEEDED
             - REVERSAL_INSUFFICIENT_FUNDS
             - WALLET_NOT_FOUND
             - CURRENCY_MISMATCH

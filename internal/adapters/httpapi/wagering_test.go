@@ -193,10 +193,11 @@ func TestWageringFailuresAreMappedWithoutLeakingInternals(t *testing.T) {
 		code       string
 		retryAfter bool
 	}{
-		"temporarily unavailable":  {fmt.Errorf("%w: %s", application.ErrTemporarilyUnavailable, secret), http.StatusServiceUnavailable, CodeUnavailable, true},
-		"a kind not supported yet": {fmt.Errorf("%w: WIN", processwager.ErrUnsupportedKind), http.StatusBadRequest, CodeInvalidRequest, false},
-		"invalid input":            {fmt.Errorf("%w: wager: invalid identifier: roundId", processwager.ErrInvalidInput), http.StatusBadRequest, CodeInvalidRequest, false},
-		"anything else":            {errors.New(secret), http.StatusInternalServerError, CodeInternal, false},
+		"temporarily unavailable":       {fmt.Errorf("%w: %s", application.ErrTemporarilyUnavailable, secret), http.StatusServiceUnavailable, CodeUnavailable, true},
+		"a kind not supported yet":      {fmt.Errorf("%w: REFUND", processwager.ErrUnsupportedKind), http.StatusBadRequest, CodeInvalidRequest, false},
+		"a reference not supported yet": {processwager.ErrReferenceNotSupported, http.StatusBadRequest, CodeInvalidRequest, false},
+		"invalid input":                 {fmt.Errorf("%w: wager: invalid identifier: roundId", processwager.ErrInvalidInput), http.StatusBadRequest, CodeInvalidRequest, false},
+		"anything else":                 {errors.New(secret), http.StatusInternalServerError, CodeInternal, false},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

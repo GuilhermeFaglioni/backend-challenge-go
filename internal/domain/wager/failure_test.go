@@ -14,6 +14,7 @@ import (
 func TestTheCatalogHasEveryDocumentedCodeWithItsClass(t *testing.T) {
 	want := map[wager.FailureCode]wager.FailureClass{
 		wager.FailureInsufficientFunds:         wager.ClassDefinitive,
+		wager.FailureBalanceLimitExceeded:      wager.ClassDefinitive,
 		wager.FailureReversalInsufficientFunds: wager.ClassDefinitive,
 		wager.FailureWalletNotFound:            wager.ClassDefinitive,
 		wager.FailureCurrencyMismatch:          wager.ClassCorrectable,
@@ -37,6 +38,7 @@ func TestTheStringsOfTheCodesAreStable(t *testing.T) {
 	// Clients branch on these strings: they are part of the contract.
 	for code, text := range map[wager.FailureCode]string{
 		wager.FailureInsufficientFunds:         "INSUFFICIENT_FUNDS",
+		wager.FailureBalanceLimitExceeded:      "BALANCE_LIMIT_EXCEEDED",
 		wager.FailureReversalInsufficientFunds: "REVERSAL_INSUFFICIENT_FUNDS",
 		wager.FailureWalletNotFound:            "WALLET_NOT_FOUND",
 		wager.FailureCurrencyMismatch:          "CURRENCY_MISMATCH",

@@ -349,6 +349,27 @@ wait_for "the unknown message in the dead-letter queue" dead_letter_arrived
 wait_for "the bad message to leave the input queue" queue_is_empty
 ok "a message that can never be handled goes to the dead-letter queue and stops blocking its group"
 
+# WIN credits, LOSS moves nothing; the books still agree.
+win_body="{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-win-1\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"WIN\",\"money\":{\"amount\":\"10.00\",\"currency\":\"BRL\"}}"
+status=$(api_status POST "$second_port" /wagering/transactions "$provider_token" "$win_body" 'Idempotency-Key: smoke-win-key-1')
+[ "$status" = "200" ] || fail "a win answered ${status}: $(cat "$SMOKE_BODY")"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "80.00" ] || fail "the win left $(json_get balance.amount < "$SMOKE_BODY"), not 80.00"
+loss_body="{\"providerId\":\"provider-a\",\"externalTransactionId\":\"smoke-loss-1\",\"playerId\":\"${player_id}\",\"walletId\":\"${wallet_id}\",\"roundId\":\"smoke-round\",\"gameId\":\"smoke-game\",\"kind\":\"LOSS\",\"money\":{\"amount\":\"0.00\",\"currency\":\"BRL\"}}"
+status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" "$loss_body" 'Idempotency-Key: smoke-loss-key-1')
+[ "$status" = "200" ] || fail "a loss answered ${status}: $(cat "$SMOKE_BODY")"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "80.00" ] || fail "the loss changed the balance to $(json_get balance.amount < "$SMOKE_BODY")"
+status=$(api_status POST "$second_port" "/wallets/${wallet_id}/reconciliation" "$internal_token")
+[ "$status" = "200" ] || fail "reconciling after the win and the loss answered ${status}"
+RECONCILIATION_BODY="$(cat "$SMOKE_BODY")" python3 - <<'PY' || fail "the books do not agree at 80.00 after a win and a loss (expected 4 entries: opening, bet, bet, win)"
+import json, os, sys
+
+result = json.loads(os.environ["RECONCILIATION_BODY"])
+if not result["consistent"] or result["storedBalance"]["amount"] != "80.00" or result["checkedEntries"] != 4:
+    print(result, file=sys.stderr)
+    sys.exit(1)
+PY
+ok "a win credits, a loss moves nothing (no ledger entry), and the books agree at 80.00"
+
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"
 [ "$(json_get error.walletId < "$SMOKE_BODY")" = "$wallet_id" ] || fail "the 409 does not name the existing wallet"
