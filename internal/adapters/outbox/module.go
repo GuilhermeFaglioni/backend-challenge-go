@@ -26,6 +26,7 @@ func NewFromConfig(lc fx.Lifecycle, cfg config.Config, store application.OutboxS
 	p := New(store, sender, Options{
 		PollInterval: cfg.Outbox.PollInterval,
 		BatchSize:    cfg.Outbox.BatchSize,
+		PerWallet:    cfg.Outbox.PerWallet,
 		Lease:        cfg.Outbox.Lease,
 		Logger:       log,
 		Registerer:   reg,

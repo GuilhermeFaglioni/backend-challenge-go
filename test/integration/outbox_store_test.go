@@ -78,7 +78,7 @@ func TestReservingReturnsDueEventsInTheOrderTheyWereWrittenAndLeasesThem(t *test
 	e := newOutboxEnv(t)
 	a, b, c := e.add(t, uuid.New()), e.add(t, uuid.New()), e.add(t, uuid.New())
 
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{a, b, c}, ids(got))
 	for _, id := range []uuid.UUID{a, b, c} {
@@ -87,7 +87,7 @@ func TestReservingReturnsDueEventsInTheOrderTheyWereWrittenAndLeasesThem(t *test
 		require.True(t, leased, "a reserved event is leased")
 	}
 
-	again, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	again, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Empty(t, again, "a leased event is not handed out twice")
 }
@@ -97,7 +97,7 @@ func TestReservingReturnsTheEventAsStored(t *testing.T) {
 	wallet := uuid.New()
 	id := e.addAt(t, wallet, "cause-1", time.Now().UTC())
 
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	entry := got[0]
@@ -117,7 +117,7 @@ func TestReservingRespectsTheLimit(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		e.add(t, uuid.New())
 	}
-	got, err := e.store.Reserve(t.Context(), 3, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 3, 1, time.Minute)
 	require.NoError(t, err)
 	require.Len(t, got, 3)
 }
@@ -130,7 +130,7 @@ func TestReservingSkipsWhatIsNotDue(t *testing.T) {
 	e.set(t, leased, `locked_until = now() + interval '1 hour'`)
 	e.set(t, expired, `locked_until = now() - interval '1 second'`)
 
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []uuid.UUID{expired, due}, ids(got), "a lease that ran out frees the event")
 }
@@ -143,33 +143,33 @@ func TestAWalletsEventsAreReservedOneAtATimeInOrder(t *testing.T) {
 	first, second, third := e.add(t, wallet), e.add(t, wallet), e.add(t, wallet)
 	elsewhere := e.add(t, other)
 
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{first, elsewhere}, ids(got), "one event per wallet, and other wallets are not held back")
 
 	t.Run("still blocked while the first is in flight or backing off", func(t *testing.T) {
-		again, err := e.store.Reserve(t.Context(), 10, time.Minute)
+		again, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 		require.NoError(t, err)
 		require.Empty(t, again)
 
 		require.NoError(t, e.store.MarkFailed(t.Context(), []application.OutboxFailure{{EventID: first, Reason: "queue down", RetryIn: time.Hour}}))
-		again, err = e.store.Reserve(t.Context(), 10, time.Minute)
+		again, err = e.store.Reserve(t.Context(), 10, 1, time.Minute)
 		require.NoError(t, err)
 		require.Empty(t, again, "the second event does not overtake the first while it waits to retry")
 	})
 
 	t.Run("released when the first is published", func(t *testing.T) {
 		e.set(t, first, `next_attempt_at = now()`)
-		got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+		got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 		require.NoError(t, err)
 		require.Equal(t, []uuid.UUID{first}, ids(got))
 		require.NoError(t, e.store.MarkPublished(t.Context(), []uuid.UUID{first, elsewhere}))
 
-		got, err = e.store.Reserve(t.Context(), 10, time.Minute)
+		got, err = e.store.Reserve(t.Context(), 10, 1, time.Minute)
 		require.NoError(t, err)
 		require.Equal(t, []uuid.UUID{second}, ids(got))
 		require.NoError(t, e.store.MarkPublished(t.Context(), []uuid.UUID{second}))
-		got, err = e.store.Reserve(t.Context(), 10, time.Minute)
+		got, err = e.store.Reserve(t.Context(), 10, 1, time.Minute)
 		require.NoError(t, err)
 		require.Equal(t, []uuid.UUID{third}, ids(got))
 	})
@@ -190,7 +190,7 @@ func TestReservingDoesNotWaitForRowsAnotherTransactionHolds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	got, err := e.store.Reserve(ctx, 10, time.Minute)
+	got, err := e.store.Reserve(ctx, 10, 1, time.Minute)
 	require.NoError(t, err, "the reservation waited for a row that was not its to take")
 	require.Equal(t, []uuid.UUID{free}, ids(got))
 	require.Less(t, time.Since(start), 2*time.Second)
@@ -213,7 +213,7 @@ func TestPublishersContendingForTheSameRowsNeverShareOneAndNeverLoseOne(t *testi
 			defer wg.Done()
 			store := postgres.NewOutboxStore(e.pool)
 			for {
-				got, err := store.Reserve(t.Context(), 7, time.Minute)
+				got, err := store.Reserve(t.Context(), 7, 1, time.Minute)
 				if err != nil {
 					t.Errorf("reserve: %v", err)
 					return
@@ -241,7 +241,7 @@ func TestPublishersContendingForTheSameRowsNeverShareOneAndNeverLoseOne(t *testi
 func TestFailingAnEventCountsTheAttemptAndSchedulesTheNext(t *testing.T) {
 	e := newOutboxEnv(t)
 	id := e.add(t, uuid.New())
-	_, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	_, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 
 	require.NoError(t, e.store.MarkFailed(t.Context(), []application.OutboxFailure{{EventID: id, Reason: "queue down", RetryIn: 30 * time.Second}}))
@@ -253,12 +253,12 @@ func TestFailingAnEventCountsTheAttemptAndSchedulesTheNext(t *testing.T) {
 	require.Equal(t, "queue down", *lastError)
 	require.InDelta(t, 30, retryIn.Seconds(), 5, "the next attempt is scheduled by the database clock")
 
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Empty(t, got, "not due yet")
 
 	e.set(t, id, `next_attempt_at = now()`)
-	got, err = e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err = e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, 1, got[0].Attempts, "the retry knows it is one")
@@ -305,7 +305,7 @@ func TestTruncationNeverCutsACharacterInHalf(t *testing.T) {
 func TestMarkingPublishedIsFinalAndIdempotent(t *testing.T) {
 	e := newOutboxEnv(t)
 	a, b := e.add(t, uuid.New()), e.add(t, uuid.New())
-	_, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	_, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 
 	require.NoError(t, e.store.MarkPublished(t.Context(), []uuid.UUID{a, uuid.New()}), "an unknown id is not an error")
@@ -329,14 +329,14 @@ func TestMarkingPublishedIsFinalAndIdempotent(t *testing.T) {
 func TestReleasingGivesTheLeaseBackWithoutCountingAnAttempt(t *testing.T) {
 	e := newOutboxEnv(t)
 	id := e.add(t, uuid.New())
-	_, err := e.store.Reserve(t.Context(), 10, time.Hour)
+	_, err := e.store.Reserve(t.Context(), 10, 1, time.Hour)
 	require.NoError(t, err)
 
 	require.NoError(t, e.store.Release(t.Context(), []uuid.UUID{id}))
 	attempts, _, leased, _, _ := e.row(t, id)
 	require.Zero(t, attempts)
 	require.False(t, leased)
-	got, err := e.store.Reserve(t.Context(), 10, time.Minute)
+	got, err := e.store.Reserve(t.Context(), 10, 1, time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{id}, ids(got), "another publisher can take it at once")
 }
@@ -370,7 +370,70 @@ func TestACancelledContextIsReportedAsTemporary(t *testing.T) {
 	e := newOutboxEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := e.store.Reserve(ctx, 10, time.Minute)
+	_, err := e.store.Reserve(ctx, 10, 1, time.Minute)
 	require.ErrorIs(t, err, application.ErrTemporarilyUnavailable)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// --- a run of a wallet's events --------------------------------------------------------
+
+func TestAWalletIsReservedWithARunOfItsNextEventsInOrder(t *testing.T) {
+	e := newOutboxEnv(t)
+	w, other := uuid.New(), uuid.New()
+	var run []uuid.UUID
+	for range 5 {
+		run = append(run, e.add(t, w))
+	}
+	o1 := e.add(t, other)
+
+	got, err := e.store.Reserve(t.Context(), 10, 3, time.Minute)
+
+	require.NoError(t, err)
+	require.Equal(t, []uuid.UUID{run[0], run[1], run[2], o1}, ids(got), "the first three of the wallet, then the other wallet, in the order written")
+	for _, id := range run[:3] {
+		_, _, leased, _, _ := e.row(t, id)
+		require.True(t, leased)
+	}
+	_, _, leased, _, _ := e.row(t, run[3])
+	require.False(t, leased, "beyond the depth nothing is leased")
+
+	again, err := e.store.Reserve(t.Context(), 10, 3, time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, again, "while its head is held, no publisher takes the rest of the wallet")
+}
+
+func TestTheNextRunStartsWhereThePublishedOneEnded(t *testing.T) {
+	e := newOutboxEnv(t)
+	w := uuid.New()
+	var run []uuid.UUID
+	for range 4 {
+		run = append(run, e.add(t, w))
+	}
+	first, err := e.store.Reserve(t.Context(), 10, 2, time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, e.store.MarkPublished(t.Context(), ids(first)))
+
+	second, err := e.store.Reserve(t.Context(), 10, 2, time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, run[2:], ids(second))
+}
+
+func TestAFailedEventHoldsBackTheRestOfItsWallet(t *testing.T) {
+	e := newOutboxEnv(t)
+	w := uuid.New()
+	var run []uuid.UUID
+	for range 3 {
+		run = append(run, e.add(t, w))
+	}
+	got, err := e.store.Reserve(t.Context(), 10, 3, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	// The publisher sent the first, the second was refused, the third never went.
+	require.NoError(t, e.store.MarkPublished(t.Context(), []uuid.UUID{run[0]}))
+	require.NoError(t, e.store.MarkFailed(t.Context(), []application.OutboxFailure{{EventID: run[1], Reason: "throttled", RetryIn: time.Hour}}))
+	require.NoError(t, e.store.Release(t.Context(), []uuid.UUID{run[2]}))
+
+	again, err := e.store.Reserve(t.Context(), 10, 3, time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, again, "the third must not go out before the second, which waits for its retry")
 }

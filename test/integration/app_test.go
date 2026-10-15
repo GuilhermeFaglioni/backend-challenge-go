@@ -106,7 +106,7 @@ func appConfig(t *testing.T, db infra.Database, sqsEndpoint string) config.Confi
 			DiscoveryURL: kc.IssuerURL(),
 			Audience:     "wallet-api",
 		},
-		Outbox:    config.Outbox{PollInterval: 50 * time.Millisecond, BatchSize: 10, Lease: 5 * time.Second},
+		Outbox:    config.Outbox{PollInterval: 50 * time.Millisecond, BatchSize: 10, PerWallet: 10, Lease: 5 * time.Second},
 		Retention: config.Retention{Inbox: 336 * time.Hour, Outbox: 168 * time.Hour, Interval: time.Hour, BatchSize: 10000},
 		PendingReference: config.PendingReference{
 			MaxAttempts: 10, TTL: 15 * time.Minute, BackoffBase: 2 * time.Second, BackoffMax: time.Minute, MaxErrors: 5,

@@ -40,23 +40,35 @@ type fakeStore struct {
 	hasOldest bool
 
 	lastLimit int
+	lastDepth int
 	lastLease time.Duration
 }
 
-func (s *fakeStore) Reserve(_ context.Context, limit int, lease time.Duration) ([]application.OutboxEntry, error) {
+func (s *fakeStore) Reserve(_ context.Context, wallets, depth int, lease time.Duration) ([]application.OutboxEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reserveCall++
-	s.lastLimit, s.lastLease = limit, lease
+	s.lastLimit, s.lastDepth, s.lastLease = wallets, depth, lease
 	if s.reserveErr != nil {
 		return nil, s.reserveErr
 	}
-	n := min(limit, len(s.queue))
-	if s.perReserve > 0 {
-		n = min(n, s.perReserve)
+	// The first `wallets` wallets of the queue, at most `depth` events of each, in order.
+	taken := map[uuid.UUID]int{}
+	var out, rest []application.OutboxEntry
+	for _, e := range s.queue {
+		_, known := taken[e.AggregateID]
+		capped := s.perReserve > 0 && len(out) >= s.perReserve
+		if !capped && (known || len(taken) < wallets) && taken[e.AggregateID] < depth {
+			taken[e.AggregateID]++
+			out = append(out, e)
+			continue
+		}
+		if !known {
+			taken[e.AggregateID] = depth // a wallet left behind is not taken later in this call
+		}
+		rest = append(rest, e)
 	}
-	out := s.queue[:n]
-	s.queue = s.queue[n:]
+	s.queue = rest
 	return out, nil
 }
 
@@ -479,4 +491,114 @@ func TestAStoppedPublisherHasEndedItsLoop(t *testing.T) {
 	default:
 		t.Fatal("Stop returned while the loop was still running: it could reserve more events")
 	}
+}
+
+// --- several events of a wallet per cycle, in rounds -------------------------------------
+
+func chain(wallet uuid.UUID, n int) []application.OutboxEntry {
+	out := make([]application.OutboxEntry, n)
+	for i := range out {
+		out[i] = entry(0)
+		out[i].AggregateID = wallet
+	}
+	return out
+}
+
+func ids(entries []application.OutboxEntry) []uuid.UUID {
+	out := make([]uuid.UUID, len(entries))
+	for i, e := range entries {
+		out[i] = e.EventID
+	}
+	return out
+}
+
+func roundsFixture(t *testing.T, entries ...application.OutboxEntry) *fixture {
+	t.Helper()
+	f := newFixture(t, entries...)
+	f.p = New(f.store, f.sender, Options{PollInterval: time.Hour, BatchSize: 10, PerWallet: 10, Lease: time.Minute,
+		Logger: slog.New(slog.NewJSONHandler(&lockedWriter{w: f.logs}, nil)), Registerer: prometheus.NewRegistry(),
+		Jitter: func() float64 { return 0.5 }})
+	return f
+}
+
+func sentIDs(batch []application.OutboundMessage) []uuid.UUID {
+	out := make([]uuid.UUID, len(batch))
+	for i, m := range batch {
+		out[i] = m.EventID
+	}
+	return out
+}
+
+func TestAWalletsEventsGoOutOnePerRoundInTheOrderTheyWereWritten(t *testing.T) {
+	a, b := chain(uuid.New(), 3), chain(uuid.New(), 2)
+	f := roundsFixture(t, append(append([]application.OutboxEntry{}, a...), b...)...)
+
+	f.p.cycle(t.Context())
+
+	require.Equal(t, 10, f.store.lastDepth, "it asks for a run of each wallet")
+	batches := f.sender.batches()
+	require.Len(t, batches, 3, "as many requests as the longest run")
+	require.Equal(t, []uuid.UUID{a[0].EventID, b[0].EventID}, sentIDs(batches[0]), "one event of each wallet per request")
+	require.Equal(t, []uuid.UUID{a[1].EventID, b[1].EventID}, sentIDs(batches[1]))
+	require.Equal(t, []uuid.UUID{a[2].EventID}, sentIDs(batches[2]))
+	published, failed, released := f.store.snapshot()
+	require.ElementsMatch(t, append(ids(a), ids(b)...), published)
+	require.Empty(t, failed)
+	require.Empty(t, released)
+}
+
+// SQS reports each entry of a batch on its own and does not promise that a refused entry
+// stops the later ones of its group; sending the next event of a wallet only after the one
+// before it was accepted is what keeps the order.
+func TestARefusedEventStopsItsWalletAndOnlyItsWallet(t *testing.T) {
+	a, b := chain(uuid.New(), 3), chain(uuid.New(), 3)
+	f := roundsFixture(t, append(append([]application.OutboxEntry{}, a...), b...)...)
+	f.sender.refused = map[uuid.UUID]error{a[1].EventID: errors.New("throttled")}
+
+	f.p.cycle(t.Context())
+
+	batches := f.sender.batches()
+	require.Len(t, batches, 3)
+	require.Equal(t, []uuid.UUID{b[2].EventID}, sentIDs(batches[2]), "the refused wallet's next event is not sent after it")
+	published, failed, released := f.store.snapshot()
+	require.ElementsMatch(t, []uuid.UUID{a[0].EventID, b[0].EventID, b[1].EventID, b[2].EventID}, published)
+	require.Len(t, failed, 1)
+	require.Equal(t, a[1].EventID, failed[0].EventID, "the refused one is retried with backoff")
+	require.Equal(t, []uuid.UUID{a[2].EventID}, released, "and the one behind it is given back unsent, without an attempt")
+}
+
+func TestARequestThatFailsStopsEveryWalletInIt(t *testing.T) {
+	a, b := chain(uuid.New(), 2), chain(uuid.New(), 2)
+	f := roundsFixture(t, append(append([]application.OutboxEntry{}, a...), b...)...)
+	f.sender.err = errors.New("queue unavailable")
+
+	f.p.cycle(t.Context())
+
+	require.Len(t, f.sender.batches(), 1, "no second round after a failed request")
+	published, failed, released := f.store.snapshot()
+	require.Empty(t, published)
+	require.ElementsMatch(t, []uuid.UUID{a[0].EventID, b[0].EventID}, []uuid.UUID{failed[0].EventID, failed[1].EventID})
+	require.ElementsMatch(t, []uuid.UUID{a[1].EventID, b[1].EventID}, released)
+}
+
+func TestAnEventThatCannotBeSerializedStopsItsWalletToo(t *testing.T) {
+	a := chain(uuid.New(), 3)
+	a[1].Payload = json.RawMessage(`{not json`)
+	f := roundsFixture(t, a...)
+
+	f.p.cycle(t.Context())
+
+	published, failed, released := f.store.snapshot()
+	require.Equal(t, []uuid.UUID{a[0].EventID}, published)
+	require.Equal(t, a[1].EventID, failed[0].EventID)
+	require.Equal(t, []uuid.UUID{a[2].EventID}, released)
+}
+
+func TestWithOneEventPerWalletACycleIsOneRequest(t *testing.T) {
+	a := chain(uuid.New(), 3)
+	f := newFixture(t, a...) // PerWallet unset: one event of a wallet per cycle
+	f.p.cycle(t.Context())
+	require.Equal(t, 1, f.store.lastDepth)
+	require.Len(t, f.sender.batches(), 1)
+	require.Equal(t, []uuid.UUID{a[0].EventID}, sentIDs(f.sender.batches()[0]))
 }

@@ -33,12 +33,13 @@ type OutboxFailure struct {
 // OutboxStore is what the publisher needs from the outbox table. All times come from
 // the database clock.
 type OutboxStore interface {
-	// Reserve leases up to limit events that are due and returns them in the order
-	// they were written. It never returns an event another publisher holds, and an
-	// event of a wallet only after every earlier event of that wallet is published,
-	// so a wallet's events are published in order. A lease that ran out makes the
-	// event available again.
-	Reserve(ctx context.Context, limit int, lease time.Duration) ([]OutboxEntry, error)
+	// Reserve leases the due events of up to `wallets` wallets, at most `depth`
+	// consecutive events of each, and returns them in the order they were written. A
+	// wallet is only taken when every earlier event of it is published, so it is in the
+	// hands of one publisher at a time and its events go out in order; its events after
+	// the first are the ones that come right after it. It never returns an event another
+	// publisher holds; a lease that ran out makes the event available again.
+	Reserve(ctx context.Context, wallets, depth int, lease time.Duration) ([]OutboxEntry, error)
 	// MarkPublished records that the events were accepted by the queue.
 	MarkPublished(ctx context.Context, ids []uuid.UUID) error
 	// MarkFailed counts a failed attempt, releases the lease and schedules the next.
