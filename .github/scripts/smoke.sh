@@ -265,6 +265,13 @@ status=$(api_status POST "$third_port" /wagering/transactions "$provider_token" 
 [ "$(json_get balance.amount < "$SMOKE_BODY")" = "75.00" ] || fail "the replay did not return the original balance"
 ok "a bet was processed through :${second_port} and replayed through :${third_port}, once"
 
+# The result can be read back by id and by external id, from any instance, by its owner
+# only.
+status=$(api_status GET "$first_port" "/providers/provider-a/wagering/transactions/smoke-bet-1" "$provider_token")
+[ "$status" = "200" ] || fail "reading the bet by external id answered ${status}"
+[ "$(json_get status < "$SMOKE_BODY")" = "PROCESSED" ] || fail "the bet read back is not PROCESSED"
+[ "$(json_get balance.amount < "$SMOKE_BODY")" = "75.00" ] || fail "the bet read back does not show the balance of its processing"
+
 provider_b_response=$(curl -fsS -X POST "${REALM_URL}/protocol/openid-connect/token" \
   -d grant_type=client_credentials -d client_id=provider-b -d client_secret=provider-b-local-secret) || fail "keycloak refused provider-b"
 status=$(api_status POST "$first_port" /wagering/transactions "$(json_get access_token <<<"$provider_b_response")" "$bet_body" 'Idempotency-Key: smoke-key-2')
@@ -272,6 +279,12 @@ status=$(api_status POST "$first_port" /wagering/transactions "$(json_get access
 status=$(api_status POST "$first_port" /wagering/transactions "$internal_token" "$bet_body" 'Idempotency-Key: smoke-key-3')
 [ "$status" = "403" ] || fail "the internal role submitting an operation answered ${status}, not 403"
 ok "an operation for another provider, or from the internal role, is refused (403)"
+provider_b_token=$(json_get access_token <<<"$provider_b_response")
+status=$(api_status GET "$second_port" "/providers/provider-b/wagering/transactions/smoke-bet-1" "$provider_b_token")
+[ "$status" = "404" ] || fail "provider-b reading under its own name a transaction id it does not own answered ${status}, not 404"
+status=$(api_status GET "$third_port" "/providers/provider-a/wagering/transactions/smoke-bet-1" "$provider_b_token")
+[ "$status" = "403" ] || fail "provider-b reading under provider-a's name answered ${status}, not 403"
+ok "a provider reads only its own transactions (404 for ids it does not own, 403 for another's namespace)"
 
 status=$(api_status POST "$third_port" /wallets "$internal_token" "$open_body")
 [ "$status" = "409" ] || fail "opening the same wallet through :${third_port} answered ${status}, not 409"

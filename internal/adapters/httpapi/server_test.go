@@ -21,7 +21,7 @@ func newTestMux(checks ...health.Check) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics := prometheus.NewRegistry()
 	routes := NewRoutes(fakeAuthenticator{}, logger, metrics)
-	registerRoutes(routes, health.NewRegistry(health.Params{Logger: logger, Checks: checks}), metrics, NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger))
+	registerRoutes(routes, health.NewRegistry(health.Params{Logger: logger, Checks: checks}), metrics, NewWallets(&fakeOpener{}, &fakeReader{}, logger), NewWagering(&fakeProcessor{}, logger), NewTransactions(&scopedReader{}, logger))
 	return routes.Handler()
 }
 
@@ -64,14 +64,15 @@ func TestUnknownMethodIsRejected(t *testing.T) {
 func TestNewServerAppliesTheConfiguredCORSOrigins(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := NewServer(ServerParams{
-		Lifecycle: fxtest.NewLifecycle(t),
-		Config:    config.Config{HTTPAddr: "127.0.0.1:0", CORSAllowedOrigins: []string{"http://localhost:8089"}},
-		Logger:    logger,
-		Health:    health.NewRegistry(health.Params{Logger: logger}),
-		Metrics:   prometheus.NewRegistry(),
-		Authn:     fakeAuthenticator{},
-		Wallets:   NewWallets(&fakeOpener{}, &fakeReader{}, logger),
-		Wagering:  NewWagering(&fakeProcessor{}, logger),
+		Lifecycle:    fxtest.NewLifecycle(t),
+		Config:       config.Config{HTTPAddr: "127.0.0.1:0", CORSAllowedOrigins: []string{"http://localhost:8089"}},
+		Logger:       logger,
+		Health:       health.NewRegistry(health.Params{Logger: logger}),
+		Metrics:      prometheus.NewRegistry(),
+		Authn:        fakeAuthenticator{},
+		Wallets:      NewWallets(&fakeOpener{}, &fakeReader{}, logger),
+		Wagering:     NewWagering(&fakeProcessor{}, logger),
+		Transactions: NewTransactions(&scopedReader{}, logger),
 	})
 
 	preflight := func(origin string) *httptest.ResponseRecorder {

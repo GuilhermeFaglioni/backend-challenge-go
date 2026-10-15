@@ -211,7 +211,7 @@ func bearerToken(header http.Header) (token string, reason auth.Reason) {
 
 // registerRoutes declares every route of the application. A business endpoint is
 // added here with Protected and the roles that may call it.
-func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wallets *Wallets, wagering *Wagering) {
+func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wallets *Wallets, wagering *Wagering, transactions *Transactions) {
 	r.Public("GET /health/live", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}))
@@ -231,4 +231,5 @@ func registerRoutes(r *Routes, hr *health.Registry, reg *prometheus.Registry, wa
 
 	wallets.register(r)
 	wagering.register(r)
+	transactions.register(r)
 }
