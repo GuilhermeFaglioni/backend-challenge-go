@@ -87,7 +87,7 @@ Princípios que guiam as decisões:
 | Migrations | `golang-migrate` (`.up.sql` / `.down.sql`) | Padrão do ecossistema, CLI simples para aplicar e reverter. |
 | Mensageria | AWS SQS FIFO via `aws-sdk-go-v2`, LocalStack localmente | Long polling e controle de visibility timeout. |
 | IdP | Keycloak | OIDC/OAuth 2.0, `client_credentials` entre serviços, realm importável. |
-| Validação de token | `coreos/go-oidc` v3 | Discovery e JWKS com cache; valida assinatura, `iss`, `aud`, `exp`. |
+| Validação de token | `go-jose` v4 (JWS e `jwt`), com cache próprio das chaves | Valida assinatura, algoritmo, `iss`, `aud`, `exp` e `nbf` localmente. Não usamos o `go-oidc` porque seu `RemoteKeySet` busca as chaves de novo a cada `kid` desconhecido, sem limite (o que deixaria qualquer um forçar uma requisição ao Keycloak por token), e embrulha os erros de assinatura como texto, o que impede classificar a falha por motivo. |
 | IDs | UUIDv7 (`google/uuid`) | Ordenável no tempo; ajuda na paginação por cursor. |
 | Logs | `log/slog` (JSON) | Biblioteca padrão. |
 | Métricas | `prometheus/client_golang` | Contadores, histogramas e gauges em `/metrics`. |
@@ -566,7 +566,25 @@ Envelope:
 
 **IdP:** Keycloak, em container no Compose, com realm importado automaticamente (`deploy/keycloak/realm.json`) contendo os clients de teste: `provider-a`, `provider-b` e `internal-service`. A aplicação não armazena senhas nem emite tokens.
 
-**Fluxo:** o cliente obtém um JWT via `client_credentials` e chama a API com `Authorization: Bearer`. A API valida localmente, com chaves públicas em cache (JWKS): assinatura, `iss`, `aud`, `exp` e `nbf`. Não há chamada ao Keycloak por requisição.
+**Fluxo:** o cliente obtém um JWT via `client_credentials` e chama a API com `Authorization: Bearer`. A API valida localmente, com as chaves públicas em cache (JWKS), sem chamar o Keycloak por requisição.
+
+**Validação** (pacote `internal/adapters/auth`):
+
+- Só `RS256`. `alg: none`, `HS256` e qualquer outro são recusados antes de olhar a chave, o que fecha tanto o token sem assinatura quanto o ataque de confusão de algoritmo (HMAC usando a chave pública como segredo).
+- Assinatura, `iss` (deve ser o emissor configurado), `aud` (deve conter a audiência configurada, `wallet-api`), `exp` (obrigatório: um token sem expiração nunca expiraria) e `nbf`/`iat`, com tolerância de relógio de 30s.
+- Só tokens de acesso: o cabeçalho `typ`, se presente, precisa ser `JWT` ou `at+jwt`, e a claim `typ`, se presente, precisa ser `Bearer` (o Keycloak marca assim os tokens de acesso); tokens de refresh e de ID, assinados pelas mesmas chaves, são recusados. Só a serialização compacta é aceita (as serializações JSON e o cabeçalho `crit` são recusados pelo parser), e o token tem no máximo 8 KiB.
+- Os papéis vêm dos client roles do recurso `wallet-api` (`resource_access`); papéis de outros clients e papéis desconhecidos são ignorados. O `provider_id` vem da claim do token, deve ter o formato `[a-z0-9][a-z0-9._-]{0,62}`, e quem tem o papel `provider` sem `provider_id` é recusado.
+- Cada falha tem um motivo fechado (`missing`, `malformed`, `unsupported_algorithm`, `unknown_key`, `bad_signature`, `expired`, `not_yet_valid`, `wrong_issuer`, `wrong_audience`, `invalid_claims`, `keys_unavailable`, `forbidden_role`), contado em `auth_failures_total{reason}` e registrado em log sem o token.
+
+**Chaves:** as chaves são buscadas na inicialização e ficam num snapshot imutável: a busca de uma chave conhecida nunca espera ninguém, nem enquanto uma renovação está em andamento. Um token com `kid` desconhecido dispara uma nova busca, no máximo uma a cada 30s: qualquer um pode enviar tokens com `kid` inventado, e cada um não pode custar uma requisição ao Keycloak. Essa busca roda numa goroutine própria, com prazo próprio de 5s, e **não** na requisição que a disparou: quem cancela a requisição não consegue gastar a renovação da janela nem impedir que uma rotação legítima seja percebida. Quem chega durante uma renovação espera por ela (limitado pelo contexto da própria requisição) em vez de iniciar outra. Uma rotação legítima é percebida pelo primeiro token com a chave nova (um `kid` novo dentro da janela de 30s depois de outra busca é recusado como `unknown_key` e passa na janela seguinte).
+
+Se uma renovação falha, a próxima é liberada depois de 5s (não 30s), e enquanto isso um `kid` desconhecido vira `keys_unavailable` (`503`, tentável de novo, com a causa no log), não `unknown_key` (`401`): uma queda do Keycloak não pode parecer, para o cliente, que a chave não existe. Chaves com mais de uma hora são renovadas, para uma chave revogada não valer para sempre; se o Keycloak estiver fora do ar, as últimas chaves conhecidas continuam valendo. Uma entrada do JWKS que o serviço não sabe ler, que não é RSA, não é de assinatura ou tem menos de 2048 bits é ignorada sem derrubar as outras; só um JWKS sem nenhuma chave utilizável é erro. Um relógio que anda para trás não congela as renovações.
+
+**Inicialização:** o serviço não sobe sem conseguir descobrir o Keycloak e buscar as chaves (tenta a cada segundo até o prazo de início, porque ele pode estar subindo ao lado). Erro de configuração que repetir não resolve (emissor anunciado diferente, `jwks_uri` inutilizável) derruba a inicialização na hora, sem esperar o prazo. O documento de descoberta precisa anunciar o mesmo emissor configurado: dentro do Docker o serviço o alcança pelo nome (`OIDC_DISCOVERY_URL`) mas os tokens trazem a URL do host (`OIDC_ISSUER_URL`), e o smoke test confere que cada instância passou por essa divisão.
+
+**Respostas:** `401` (`UNAUTHENTICATED`, `WWW-Authenticate: Bearer`) para credencial ausente, malformada ou inválida, sempre com o mesmo corpo para não ensinar nada a quem sonda; `403` (`FORBIDDEN`) para credencial válida com papel insuficiente; `503` (`UNAVAILABLE`, `Retry-After: 5`) quando não foi possível verificar por o Keycloak estar fora do ar.
+
+**Registro de rotas:** toda rota passa por `httpapi.Routes`, que é dono do roteador. Uma rota é pública só se estiver na lista explícita (`/health/live`, `/health/ready`, `/metrics`, `/openapi.yaml`); qualquer outra é registrada com `Protected` e **precisa declarar os papéis** que podem chamá-la (sem papel, com papel desconhecido ou sem handler, o registro falha na composição). Um teste de AST reprova o build se algum outro arquivo do pacote criar um roteador, registrar no roteador padrão, iniciar outro servidor (`ListenAndServe`, `http.Serve`) ou montar um `http.Server` que não seja o de `server.go` servindo `Routes.Handler()`. A garantia de que cada rota é pública da lista ou protegida por papel é do próprio registro, que falha na composição.
 
 **Identidade e papéis:**
 
@@ -649,6 +667,7 @@ Limitações conhecidas:
 
 - Escala fixa de duas casas (sem moedas de outra escala).
 - `/metrics` sem autenticação (assume rede interna).
+- Autenticação: o emissor e o JWKS podem ser `http` (necessário no Compose local; em produção devem ser `https`); não há limite para o tempo de vida do token além do `exp` que o IdP emite; cada requisição recusada gera uma linha de log `Info` (um sondador barulhento enche o log, mas não o contador, que tem rótulos fixos); o prazo de início do Fx usa o mesmo valor do shutdown (`SHUTDOWN_TIMEOUT`), e é ele que limita a espera pelo Keycloak.
 - Eventos de saída são at-least-once; consumidores precisam deduplicar por `eventId`.
 - Janela de deduplicação do FIFO (5 minutos) não é usada como garantia.
 

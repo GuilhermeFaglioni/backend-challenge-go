@@ -11,6 +11,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/auth"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/httpapi"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/postgres"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/adapters/sqsclient"
@@ -37,6 +38,7 @@ func New(cfg config.Config) fx.Option {
 		health.Module,
 		postgres.Module,
 		sqsclient.Module,
+		auth.Module,
 		httpapi.Module,
 	)
 }

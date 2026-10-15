@@ -68,8 +68,8 @@ func environment(name, addr string, db infra.Database, extra map[string]string) 
 		"AWS_ENDPOINT_URL":   ls.Endpoint,
 		"SQS_INPUT_QUEUE":    "wager-transactions.fifo",
 		"SQS_EVENTS_QUEUE":   "wager-events.fifo",
-		// Not used until authentication exists, but the configuration requires them.
-		"OIDC_ISSUER_URL": "http://127.0.0.1:1/realms/wagering",
+		// The application discovers the identity provider's keys when it starts.
+		"OIDC_ISSUER_URL": kc.IssuerURL(),
 		"OIDC_AUDIENCE":   "wallet-api",
 		// Data written by the instrumented binary when it exits.
 		"GOCOVERDIR": coverDir,

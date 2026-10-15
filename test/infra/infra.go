@@ -298,10 +298,29 @@ func (e *TokenError) Error() string { return fmt.Sprintf("token endpoint answere
 
 var keycloakClient = &http.Client{Timeout: 15 * time.Second}
 
+// AlternateIssuerURL is the same realm reached under another host name
+// (127.0.0.1 instead of localhost, or the reverse). The test Keycloak derives the
+// issuer from the request's host, so a token requested here carries a different
+// `iss`: a real token from the wrong issuer.
+func (k *Keycloak) AlternateIssuerURL() string {
+	switch {
+	case strings.Contains(k.baseURL, "localhost"):
+		return strings.Replace(k.IssuerURL(), "localhost", "127.0.0.1", 1)
+	case strings.Contains(k.baseURL, "127.0.0.1"):
+		return strings.Replace(k.IssuerURL(), "127.0.0.1", "localhost", 1)
+	}
+	return k.IssuerURL()
+}
+
 // Token performs a client_credentials grant and returns the access token.
 func (k *Keycloak) Token(ctx context.Context, clientID, secret string) (string, error) {
+	return k.TokenAt(ctx, k.IssuerURL(), clientID, secret)
+}
+
+// TokenAt does the same against the realm as reached at realmURL.
+func (k *Keycloak) TokenAt(ctx context.Context, realmURL, clientID, secret string) (string, error) {
 	form := url.Values{"grant_type": {"client_credentials"}, "client_id": {clientID}, "client_secret": {secret}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, k.IssuerURL()+"/protocol/openid-connect/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, realmURL+"/protocol/openid-connect/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}

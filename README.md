@@ -179,7 +179,7 @@ Obter um token (os secrets são apenas locais):
 curl -s -X POST http://localhost:8180/realms/wagering/protocol/openid-connect/token -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-local-secret
 ```
 
-A validação dos tokens na API ainda não foi implementada.
+A API valida esses tokens localmente (assinatura RS256, emissor, audiência `wallet-api`, expiração) e só sobe depois de descobrir o Keycloak; o desenho está no `ARCHITECTURE.md`, seção 13. Toda rota de negócio é registrada com os papéis que podem chamá-la (`provider` ou `internal`), e um teste reprova rotas sem autorização. Os endpoints de negócio chegam com os próximos tickets do [roadmap](docs/ROADMAP.md).
 
 ## Testes
 

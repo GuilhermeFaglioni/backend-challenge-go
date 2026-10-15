@@ -24,6 +24,9 @@ import (
 var (
 	pg *infra.Postgres
 	ls *infra.LocalStack
+	// kc is needed because the application will not start without a reachable
+	// identity provider to fetch its signing keys from.
+	kc *infra.Keycloak
 
 	// binary is the instrumented application executable shared by every test.
 	binary string
@@ -67,8 +70,8 @@ func run(m *testing.M) int {
 		buildDone <- built{path, err}
 	}()
 
-	return infra.RunSuite(m, infra.SuiteOptions{}, func(s *infra.Shared) error {
-		pg, ls = s.PG, s.LS
+	return infra.RunSuite(m, infra.SuiteOptions{Keycloak: true}, func(s *infra.Shared) error {
+		pg, ls, kc = s.PG, s.LS, s.KC
 		b := <-buildDone
 		if b.err != nil {
 			return fmt.Errorf("building the application: %w", b.err)
