@@ -223,6 +223,8 @@ Constraints:
 
 Arquivos versionados em `migrations/` (`NNNNNN_nome.up.sql` e `NNNNNN_nome.down.sql`).
 
+**Rollback documentado:** todo `.down.sql` começa com um cabeçalho de quatro campos (`Undoes`, `Loses`, `Requires`, `Command`) que diz o que a reversão desfaz, o que ela faz perder (dados e proteções), o que precisa estar de pé antes e o comando. Um teste (`test/migrations`, no job de testes unitários) reprova o build se o par `up`/`down` faltar, se as versões não forem contíguas, se o cabeçalho faltar, estiver incompleto ou fora de ordem, ou se um rollback que apaga dados ou remove proteções (triggers, índices, constraints, funções, privilégios) disser que não perde nada. O formato está no README, seção "Migrations".
+
 Papéis de banco: `wagering_owner` é dono do schema e executa as migrations; a aplicação conecta como `wagering_app`, que só recebe os privilégios concedidos pelas migrations. É isso que permite negar `UPDATE`, `DELETE` e `TRUNCATE` no ledger para a aplicação. Aplicação e reversão são documentadas no `README.md` (`migrate up`, `migrate down N`). Em Compose, as migrations rodam em um serviço one-shot antes das instâncias da aplicação subirem.
 
 ## 6. Transações SQL e acesso ao banco
