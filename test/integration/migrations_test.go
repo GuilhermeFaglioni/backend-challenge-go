@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,6 @@ func sqlState(err error) string {
 
 const (
 	insufficientPrivilege = "42501"
-	undefinedTable        = "42P01"
 )
 
 func connect(ctx context.Context, t *testing.T, dsn string) *pgx.Conn {
@@ -63,50 +63,42 @@ func TestMigrationsApplyRevertAndReapply(t *testing.T) {
 }
 
 // The application role must only hold the privileges the migrations grant: it
-// reads and writes ordinary tables, cannot change the schema and cannot
-// TRUNCATE (the protection ARCHITECTURE.md relies on for the append-only
-// ledger). Tables created by the owner after the migrations are the ones the
-// default privileges are meant to cover.
-//
-// The migrations create no tables yet, so this uses throwaway tables. When the
-// wallet, transaction and ledger tables land, point the "append-only" cases at
-// the real ledger table: the REVOKE below is then the migration's, not the
-// test's.
+// reads and writes ordinary tables, cannot change the schema and cannot TRUNCATE,
+// and may only read and append to the ledger (the protection ARCHITECTURE.md relies
+// on). Both run against the real tables the migrations create.
 func TestApplicationRolePrivileges(t *testing.T) {
 	ctx := t.Context()
 	db := pg.NewDatabase(ctx, t)
 	require.NoError(t, infra.Migrate(db.OwnerDSN))
 
 	owner := connect(ctx, t, db.OwnerDSN)
-	_, err := owner.Exec(ctx, `CREATE TABLE probe (id int PRIMARY KEY, note text)`)
-	require.NoError(t, err)
-	// Same shape as the ledger will have: writes allowed, edits and deletes not.
-	_, err = owner.Exec(ctx, `CREATE TABLE append_only (id int PRIMARY KEY)`)
-	require.NoError(t, err)
-	_, err = owner.Exec(ctx, `REVOKE UPDATE, DELETE ON append_only FROM wagering_app`)
+	wallet, player := uuid.New(), uuid.New()
+	_, err := owner.Exec(ctx, `INSERT INTO wallets (id, player_id, currency, balance_minor, version, created_at, updated_at) VALUES ($1, $2, 'BRL', 0, 1, now(), now())`, wallet, player)
 	require.NoError(t, err)
 
 	app := connect(ctx, t, db.AppDSN)
 
 	t.Run("reads and writes ordinary tables", func(t *testing.T) {
-		_, err := app.Exec(ctx, `INSERT INTO probe VALUES (1, 'a')`)
+		_, err := app.Exec(ctx, `UPDATE wallets SET updated_at = now() WHERE id = $1`, wallet)
 		require.NoError(t, err)
-		_, err = app.Exec(ctx, `UPDATE probe SET note = 'b' WHERE id = 1`)
+		var count int
+		require.NoError(t, app.QueryRow(ctx, `SELECT count(*) FROM wallets WHERE id = $1`, wallet).Scan(&count))
+		require.Equal(t, 1, count)
+		_, err = app.Exec(ctx, `INSERT INTO outbox (event_id, aggregate_id, event_type, version, payload, occurred_at) VALUES (gen_random_uuid(), $1, 'X', 1, '{}', now())`, wallet)
 		require.NoError(t, err)
-		var note string
-		require.NoError(t, app.QueryRow(ctx, `SELECT note FROM probe WHERE id = 1`).Scan(&note))
-		require.Equal(t, "b", note)
-		_, err = app.Exec(ctx, `DELETE FROM probe WHERE id = 1`)
+		_, err = app.Exec(ctx, `DELETE FROM outbox`)
 		require.NoError(t, err)
 	})
 
 	denied := map[string]string{
-		"cannot truncate":                    `TRUNCATE probe`,
-		"cannot drop a table":                `DROP TABLE probe`,
+		"cannot truncate":                    `TRUNCATE wallets`,
+		"cannot drop a table":                `DROP TABLE wallets`,
 		"cannot create a table":              `CREATE TABLE intruder (id int)`,
-		"cannot alter a table":               `ALTER TABLE probe ADD COLUMN extra int`,
-		"cannot update an append-only table": `UPDATE append_only SET id = 2`,
-		"cannot delete from append-only":     `DELETE FROM append_only`,
+		"cannot alter a table":               `ALTER TABLE wallets ADD COLUMN extra int`,
+		"cannot update the ledger":           `UPDATE wallet_ledger_entries SET created_at = now()`,
+		"cannot delete from the ledger":      `DELETE FROM wallet_ledger_entries`,
+		"cannot truncate the ledger":         `TRUNCATE wallet_ledger_entries`,
+		"cannot disable the ledger triggers": `ALTER TABLE wallet_ledger_entries DISABLE TRIGGER ALL`,
 	}
 	for name, statement := range denied {
 		t.Run(name, func(t *testing.T) {
@@ -115,11 +107,6 @@ func TestApplicationRolePrivileges(t *testing.T) {
 			require.Equal(t, insufficientPrivilege, sqlState(err), "want permission denied, got: %v", err)
 		})
 	}
-
-	t.Run("still inserts into the append-only table", func(t *testing.T) {
-		_, err := app.Exec(ctx, `INSERT INTO append_only VALUES (1)`)
-		require.NoError(t, err)
-	})
 }
 
 // Reverting must take the grants back, not just the schema objects.
