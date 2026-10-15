@@ -85,12 +85,8 @@ func (w *walletRepo) Update(context.Context, wallet.Wallet, wallet.Wallet) error
 	panic("openwallet must not update a wallet")
 }
 
-func (t *txRepo) FindByKey(context.Context, string, string) (wager.Transaction, bool, error) {
-	panic("openwallet has no idempotency key")
-}
-
-func (t *txRepo) FindByExternalID(context.Context, string, string) (wager.Transaction, bool, error) {
-	panic("openwallet has no external id")
+func (t *txRepo) Find(context.Context, string, string, string) (application.ExistingTransactions, error) {
+	panic("openwallet looks up no idempotency key")
 }
 
 func (t *txRepo) Claim(context.Context, wager.Transaction) (bool, error) {

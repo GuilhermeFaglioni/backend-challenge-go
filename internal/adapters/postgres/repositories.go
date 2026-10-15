@@ -215,24 +215,36 @@ const transactionColumns = `id, kind, requested_wallet_id, wallet_id, player_id,
 	round_id, game_id, reference_external_transaction_id, reference_transaction_id, correlation_id,
 	created_at, updated_at, processed_at`
 
-func (r transactionRepository) FindByKey(ctx context.Context, providerID, idempotencyKey string) (wager.Transaction, bool, error) {
-	return r.find(ctx, `WHERE origin = 'EXTERNAL' AND provider_id = $1 AND idempotency_key = $2`, providerID, idempotencyKey)
-}
-
-func (r transactionRepository) FindByExternalID(ctx context.Context, providerID, externalTransactionID string) (wager.Transaction, bool, error) {
-	return r.find(ctx, `WHERE origin = 'EXTERNAL' AND provider_id = $1 AND external_transaction_id = $2`, providerID, externalTransactionID)
-}
-
-func (r transactionRepository) find(ctx context.Context, where string, args ...any) (wager.Transaction, bool, error) {
-	row := r.tx.QueryRow(ctx, `SELECT `+transactionColumns+` FROM wager_transactions `+where, args...)
-	t, err := scanTransaction(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return wager.Transaction{}, false, nil
-	}
+// Find reads, in one statement, whatever the provider has under the key or under the
+// external id. A single statement sees a single snapshot, so a concurrent commit cannot
+// be seen by one half of the answer and not by the other.
+func (r transactionRepository) Find(ctx context.Context, providerID, idempotencyKey, externalTransactionID string) (application.ExistingTransactions, error) {
+	rows, err := r.tx.Query(ctx, `SELECT `+transactionColumns+` FROM wager_transactions
+		WHERE origin = 'EXTERNAL' AND provider_id = $1 AND (idempotency_key = $2 OR external_transaction_id = $3)`,
+		providerID, idempotencyKey, externalTransactionID)
 	if err != nil {
-		return wager.Transaction{}, false, err
+		return application.ExistingTransactions{}, fmt.Errorf("find wager transactions: %w", err)
 	}
-	return t, true, nil
+	defer rows.Close()
+
+	var found application.ExistingTransactions
+	for rows.Next() {
+		t, err := scanTransaction(rows)
+		if err != nil {
+			return application.ExistingTransactions{}, err
+		}
+		external := t.External()
+		if external.IdempotencyKey == idempotencyKey {
+			found.ByKey, found.HasByKey = t, true
+		}
+		if external.ExternalTransactionID == externalTransactionID {
+			found.ByExternalID, found.HasByExternalID = t, true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return application.ExistingTransactions{}, fmt.Errorf("find wager transactions: %w", err)
+	}
+	return found, nil
 }
 
 func scanTransaction(row pgx.Row) (wager.Transaction, error) {

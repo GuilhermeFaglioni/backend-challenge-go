@@ -147,22 +147,15 @@ func (r *walletRepo) Update(_ context.Context, before, after wallet.Wallet) erro
 
 func (r *txRepo) InsertOpening(context.Context, wager.Transaction) error { panic("not used") }
 
-func (r *txRepo) FindByKey(_ context.Context, provider, k string) (wager.Transaction, bool, error) {
+func (r *txRepo) Find(_ context.Context, provider, k, id string) (application.ExistingTransactions, error) {
 	db := (*memDB)(r)
-	if err := db.step("find_key"); err != nil {
-		return wager.Transaction{}, false, err
+	if err := db.step("find"); err != nil {
+		return application.ExistingTransactions{}, err
 	}
-	t, ok := db.byKey[key{provider, k}]
-	return t, ok, nil
-}
-
-func (r *txRepo) FindByExternalID(_ context.Context, provider, id string) (wager.Transaction, bool, error) {
-	db := (*memDB)(r)
-	if err := db.step("find_external"); err != nil {
-		return wager.Transaction{}, false, err
-	}
-	t, ok := db.byExt[key{provider, id}]
-	return t, ok, nil
+	var found application.ExistingTransactions
+	found.ByKey, found.HasByKey = db.byKey[key{provider, k}]
+	found.ByExternalID, found.HasByExternalID = db.byExt[key{provider, id}]
+	return found, nil
 }
 
 func (r *txRepo) Claim(_ context.Context, t wager.Transaction) (bool, error) {
@@ -307,7 +300,7 @@ func TestANewBetIsProcessedInTheDocumentedOrder(t *testing.T) {
 	out, err := f.uc.Execute(t.Context(), betInput(2500))
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"find_key", "find_external", "lock", "claim", "update", "ledger", "finish", "outbox", "outbox"}, f.db.calls,
+	require.Equal(t, []string{"find", "lock", "claim", "update", "ledger", "finish", "outbox", "outbox"}, f.db.calls,
 		"stored answer first (no lock), then the wallet lock, then the claim, then the writes")
 	require.Equal(t, 1, f.db.uowRuns, "one unit of work: everything commits together")
 
@@ -370,7 +363,7 @@ func TestAReplayIsAnsweredFromStorageWithTheBalanceOfTheFirstTime(t *testing.T) 
 	require.Equal(t, first.Transaction.ID(), replay.Transaction.ID())
 	result, _ := replay.Transaction.Result()
 	require.Equal(t, int64(7500), result.Balance.Minor(), "the balance seen when it was first processed, not the current 65.00")
-	require.Equal(t, []string{"find_key"}, f.db.calls, "a replay takes no lock and writes nothing")
+	require.Equal(t, []string{"find"}, f.db.calls, "a replay takes no lock and writes nothing")
 	require.Equal(t, int64(6500), f.balance())
 	require.Len(t, f.db.entries, 2)
 	require.Equal(t, 4, len(f.db.events), "and emits no events: they were written the first time")
@@ -488,7 +481,7 @@ func TestAnInsufficientBalanceIsAStoredFinalReplayableRejection(t *testing.T) {
 	require.Equal(t, wager.FailureInsufficientFunds, out.Transaction.FailureCode())
 	require.Equal(t, int64(5000), f.balance())
 	require.Empty(t, f.db.entries, "a rejection writes no ledger entry")
-	require.Equal(t, []string{"find_key", "find_external", "lock", "claim", "finish", "outbox"}, f.db.calls, "no wallet update")
+	require.Equal(t, []string{"find", "lock", "claim", "finish", "outbox"}, f.db.calls, "no wallet update")
 	require.Equal(t, []string{"WagerTransactionRejected"}, types(f.db.events))
 	data, err := f.db.events[0].DataJSON()
 	require.NoError(t, err)
@@ -521,7 +514,7 @@ func TestAnUnknownWalletIsStoredWithTheRequestedIdAndNoWallet(t *testing.T) {
 	require.Equal(t, uuid.Nil, out.Transaction.WalletID(), "there is no such wallet")
 	require.Equal(t, missing, out.Transaction.RequestedWalletID(), "but what was asked for is kept")
 
-	require.Equal(t, []string{"find_key", "find_external", "lock", "claim", "outbox"}, f.db.calls, "claimed in its final state: no update afterwards")
+	require.Equal(t, []string{"find", "lock", "claim", "outbox"}, f.db.calls, "claimed in its final state: no update afterwards")
 	require.Equal(t, []string{"WagerTransactionRejected"}, types(f.db.events))
 	require.Equal(t, missing, f.db.events[0].AggregateID())
 	require.Equal(t, int64(10000), f.balance())
@@ -625,7 +618,7 @@ func TestKindsNotProcessedYetAreRefusedBeforeTheDatabase(t *testing.T) {
 // --- failures leave nothing behind --------------------------------------------------
 
 func TestAFailureAtAnyStepRollsEverythingBack(t *testing.T) {
-	for _, step := range []string{"find_key", "find_external", "lock", "claim", "update", "ledger", "finish", "outbox"} {
+	for _, step := range []string{"find", "lock", "claim", "update", "ledger", "finish", "outbox"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFixture(t, 10000)
 			f.db.failAt = step
