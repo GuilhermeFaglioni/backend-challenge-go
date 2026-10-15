@@ -24,7 +24,7 @@ func markTransient(err error) error {
 }
 
 func isTransient(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, application.ErrConcurrentUpdate) {
 		return true
 	}
 	var connectErr *pgconn.ConnectError

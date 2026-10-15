@@ -75,6 +75,32 @@ type (
 	outboxRepo recorder
 )
 
+// Opening a wallet never reads or locks one, and never touches the idempotency of an
+// external operation: the fakes fail loudly if it starts to.
+func (w *walletRepo) Lock(context.Context, uuid.UUID) (wallet.Wallet, error) {
+	panic("openwallet must not lock a wallet")
+}
+
+func (w *walletRepo) Update(context.Context, wallet.Wallet, wallet.Wallet) error {
+	panic("openwallet must not update a wallet")
+}
+
+func (t *txRepo) FindByKey(context.Context, string, string) (wager.Transaction, bool, error) {
+	panic("openwallet has no idempotency key")
+}
+
+func (t *txRepo) FindByExternalID(context.Context, string, string) (wager.Transaction, bool, error) {
+	panic("openwallet has no external id")
+}
+
+func (t *txRepo) Claim(context.Context, wager.Transaction) (bool, error) {
+	panic("openwallet claims no idempotency key")
+}
+
+func (t *txRepo) Finish(context.Context, wager.Transaction) error {
+	panic("openwallet records the opening in its final state")
+}
+
 func (w *walletRepo) Insert(_ context.Context, v wallet.Wallet) error {
 	r := (*recorder)(w)
 	if err := r.step("wallet"); err != nil {

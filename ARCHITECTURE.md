@@ -364,6 +364,8 @@ stateDiagram-v2
 
 A ordem dos passos 2 a 5 é a da seção 7 e vale para todos os pontos de entrada.
 
+**No código (`internal/application/processwager`):** a `BET` segue exatamente os passos acima, em uma unidade de trabalho. (1) Antes de qualquer lock, procura a resposta guardada: por `(provedor, chave)` e depois por `(provedor, id externo)`; a mesma chave com o mesmo hash devolve a transação guardada como replay (com o saldo do processamento original), a mesma chave com outro hash é `IDEMPOTENCY_KEY_CONFLICT` e o mesmo id externo sob outra chave é `DUPLICATE_EXTERNAL_TRANSACTION`, sem reaplicar. (2) Trava a carteira com `FOR NO KEY UPDATE`. Se ela não existe, grava a transação já como `REJECTED` com `WALLET_NOT_FOUND`, sem carteira e com o id pedido. (3) Faz o *claim*: `INSERT ... ON CONFLICT DO NOTHING` sem alvo, que espera um claim concorrente da mesma chave terminar e não aborta a transação; se perdeu, devolve o que o vencedor gravou (replay ou conflito) sem escrever nada. (4) Aplica a regra (`Settle`), atualiza a carteira condicionada à versão que leu, grava o lançamento, o desfecho e os eventos (`WagerTransactionProcessed` + `WalletBalanceChanged`, ou `WagerTransactionRejected`). Uma rejeição (`INSUFFICIENT_FUNDS`, `PLAYER_MISMATCH`, `CURRENCY_MISMATCH`, `WALLET_NOT_FOUND`) fica gravada, final e reproduzível, sem lançamento e sem tocar na carteira. Um erro transitório desfaz tudo e chega ao chamador como `ErrTemporarilyUnavailable`; o `UnitOfWork` repete em `40001`, `40P01` e quando a versão da carteira mudou por baixo (`ErrConcurrentUpdate`). Os logs levam os identificadores e o desfecho, nunca valores, a chave de idempotência nem o payload.
+
 **Transitório versus permanente:**
 
 | Classe | Exemplos | Tratamento |
@@ -672,6 +674,7 @@ O prazo é `fx.StopTimeout` (padrão 30s, configurável). Como toda operação �
 
 - **Logs:** JSON via `slog`, com `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId` quando disponíveis. Não registra tokens, credenciais nem payloads financeiros completos (valores monetários só em eventos de auditoria específicos, sem corpo bruto).
 - **Métricas (Prometheus):** transações por status e tipo, duplicatas (replays), retries, mensagens enviadas à DLQ, conflitos de concorrência (retries por `40001`/`40P01`/versão), atraso da outbox (idade do evento pendente mais antigo), latência de processamento (histograma) e divergências de reconciliação.
+  - Processamento de operações (`processwager`): `wager_requests_total{kind,outcome}` (todos os desfechos: `processed`, `rejected`, `replayed`, `key_conflict`, `duplicate_external`, `invalid`, `unsupported`, `unavailable`, `error`), `wager_duplicates_total{type}` (`replay`, `key_conflict`, `external_id`), `wager_processing_duration_seconds{kind}` (histograma, qualquer desfecho) e `db_transaction_retries_total{reason}` (`serialization_failure`, `deadlock`, `concurrent_update`: cada um é um conflito de concorrência absorvido por uma retentativa). O tipo vem de fora, então um valor desconhecido vira o rótulo `unknown`, nunca um novo rótulo. Todas as séries começam em zero.
 - **Health:** `GET /health/live` (processo) e `GET /health/ready` (Postgres e SQS).
 - **Opcionais:** tracing com OpenTelemetry fica como diferencial, se houver tempo.
 

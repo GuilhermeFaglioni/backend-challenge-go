@@ -124,6 +124,51 @@ func TestUnitOfWorkRetriesSerializationFailuresAndDeadlocks(t *testing.T) {
 	}
 }
 
+func TestUnitOfWorkRetriesAWalletThatChangedUnderItAndTellsTheObserverWhy(t *testing.T) {
+	e := newUowEnv(t)
+	observed := &reasonLog{}
+	uow := e.uow.WithObserver(observed)
+
+	reasons := []error{pgError("40001"), pgError("40P01"), application.ErrConcurrentUpdate}
+	var attempts int
+	err := uow.WithRetry(4, noWait).Do(t.Context(), func(context.Context, application.Repositories) error {
+		attempts++
+		if attempts <= len(reasons) {
+			return reasons[attempts-1]
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 4, attempts)
+	require.Equal(t, []application.RetryReason{application.RetrySerializationFailure, application.RetryDeadlock, application.RetryConcurrentUpdate}, observed.all(),
+		"one notice per retry, in order, saying why")
+
+	t.Run("giving up is not a retry, and is reported as temporary", func(t *testing.T) {
+		observed := &reasonLog{}
+		err := e.uow.WithObserver(observed).Do(t.Context(), func(context.Context, application.Repositories) error { return application.ErrConcurrentUpdate })
+		require.ErrorIs(t, err, application.ErrTemporarilyUnavailable)
+		require.ErrorIs(t, err, application.ErrConcurrentUpdate)
+		require.Len(t, observed.all(), 2, "three attempts are two retries")
+	})
+}
+
+type reasonLog struct {
+	mu      sync.Mutex
+	reasons []application.RetryReason
+}
+
+func (r *reasonLog) Retried(reason application.RetryReason) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reasons = append(r.reasons, reason)
+}
+
+func (r *reasonLog) all() []application.RetryReason {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]application.RetryReason(nil), r.reasons...)
+}
+
 func TestUnitOfWorkGivesUpAfterTheBound(t *testing.T) {
 	e := newUowEnv(t)
 	var attempts int

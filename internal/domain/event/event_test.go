@@ -375,3 +375,121 @@ func TestAnEnvelopeNeedsItsData(t *testing.T) {
 	_, err = json.Marshal(event.Envelope{EventID: eventID, EventType: "X", AggregateID: walletID, CorrelationID: "c", OccurredAt: occurredAt, Version: 1, Data: []byte("not json")})
 	require.Error(t, err, "data that is not JSON would corrupt the envelope")
 }
+
+// --- events of an external transaction -------------------------------------------
+
+func externalProcessedData(t *testing.T) event.WagerTransactionProcessedData {
+	t.Helper()
+	d := processedData(t)
+	d.Kind, d.Origin = wager.KindBet, wager.OriginExternal
+	d.Money, d.Balance = brl(t, 2500), brl(t, 7500)
+	d.WalletVersion = 3
+	d.ProviderID, d.ExternalTransactionID, d.RoundID, d.GameID = "provider-a", "transaction-123", "round-987", "fortune-chimp"
+	return d
+}
+
+func TestAnExternalProcessedEventCarriesTheProvidersMetadata(t *testing.T) {
+	e, err := event.NewWagerTransactionProcessed(meta(), externalProcessedData(t))
+	require.NoError(t, err)
+	got, err := json.Marshal(e)
+	require.NoError(t, err)
+
+	want := `{"eventId":"11111111-1111-4111-8111-111111111111","eventType":"WagerTransactionProcessed",` +
+		`"aggregateId":"22222222-2222-4222-8222-222222222222","correlationId":"corr-1","causationId":"cause-1",` +
+		`"occurredAt":"2026-10-14T12:00:00.123Z","version":1,` +
+		`"data":{"transactionId":"33333333-3333-4333-8333-333333333333","walletId":"22222222-2222-4222-8222-222222222222",` +
+		`"playerId":"44444444-4444-4444-8444-444444444444","kind":"BET","origin":"EXTERNAL",` +
+		`"providerId":"provider-a","externalTransactionId":"transaction-123","roundId":"round-987","gameId":"fortune-chimp",` +
+		`"money":{"amount":"25.00","currency":"BRL"},"balance":{"amount":"75.00","currency":"BRL"},"walletVersion":3}}`
+	require.Equal(t, want, string(got))
+}
+
+func TestTheMetadataIsAllOrNothingAndFollowsTheOrigin(t *testing.T) {
+	cases := map[string]func(*event.WagerTransactionProcessedData){
+		"external without a provider":     func(d *event.WagerTransactionProcessedData) { d.ProviderID = "" },
+		"external without an external id": func(d *event.WagerTransactionProcessedData) { d.ExternalTransactionID = "" },
+		"external without a round":        func(d *event.WagerTransactionProcessedData) { d.RoundID = "" },
+		"external without a game":         func(d *event.WagerTransactionProcessedData) { d.GameID = "" },
+		"internal with a provider": func(d *event.WagerTransactionProcessedData) {
+			d.Kind, d.Origin = wager.KindOpening, wager.OriginInternal
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := externalProcessedData(t)
+			mutate(&d)
+			_, err := event.NewWagerTransactionProcessed(meta(), d)
+			require.ErrorIs(t, err, event.ErrInvalidKind)
+		})
+	}
+}
+
+func rejectedData(t *testing.T) event.WagerTransactionRejectedData {
+	t.Helper()
+	return event.WagerTransactionRejectedData{
+		TransactionID: transactionID, WalletID: walletID, PlayerID: playerID,
+		Kind: wager.KindBet, ProviderID: "provider-a", ExternalTransactionID: "transaction-123",
+		RoundID: "round-987", GameID: "fortune-chimp", Money: brl(t, 8000),
+		FailureCode: wager.FailureInsufficientFunds,
+	}
+}
+
+func TestARejectedEventSaysWhyAndForWhom(t *testing.T) {
+	e, err := event.NewWagerTransactionRejected(meta(), rejectedData(t))
+	require.NoError(t, err)
+	require.Equal(t, "WagerTransactionRejected", e.Type())
+	require.Equal(t, 1, e.Version())
+	require.Equal(t, walletID, e.AggregateID(), "grouped by the wallet that was asked for")
+
+	got, err := json.Marshal(e)
+	require.NoError(t, err)
+	want := `{"eventId":"11111111-1111-4111-8111-111111111111","eventType":"WagerTransactionRejected",` +
+		`"aggregateId":"22222222-2222-4222-8222-222222222222","correlationId":"corr-1","causationId":"cause-1",` +
+		`"occurredAt":"2026-10-14T12:00:00.123Z","version":1,` +
+		`"data":{"transactionId":"33333333-3333-4333-8333-333333333333","walletId":"22222222-2222-4222-8222-222222222222",` +
+		`"playerId":"44444444-4444-4444-8444-444444444444","kind":"BET","providerId":"provider-a","externalTransactionId":"transaction-123",` +
+		`"roundId":"round-987","gameId":"fortune-chimp","money":{"amount":"80.00","currency":"BRL"},"failureCode":"INSUFFICIENT_FUNDS"}}`
+	require.Equal(t, want, string(got))
+}
+
+func TestARejectedEventRefusesBadData(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*event.WagerTransactionRejectedData)
+		want   error
+	}{
+		"nil transaction":     {func(d *event.WagerTransactionRejectedData) { d.TransactionID = uuid.Nil }, event.ErrInvalidID},
+		"nil wallet":          {func(d *event.WagerTransactionRejectedData) { d.WalletID = uuid.Nil }, event.ErrInvalidID},
+		"nil player":          {func(d *event.WagerTransactionRejectedData) { d.PlayerID = uuid.Nil }, event.ErrInvalidID},
+		"no kind":             {func(d *event.WagerTransactionRejectedData) { d.Kind = "" }, event.ErrInvalidKind},
+		"an opening":          {func(d *event.WagerTransactionRejectedData) { d.Kind = wager.KindOpening }, event.ErrInvalidKind},
+		"no provider":         {func(d *event.WagerTransactionRejectedData) { d.ProviderID = "" }, event.ErrInvalidKind},
+		"no external id":      {func(d *event.WagerTransactionRejectedData) { d.ExternalTransactionID = "" }, event.ErrInvalidKind},
+		"no round":            {func(d *event.WagerTransactionRejectedData) { d.RoundID = "" }, event.ErrInvalidKind},
+		"no game":             {func(d *event.WagerTransactionRejectedData) { d.GameID = "" }, event.ErrInvalidKind},
+		"negative money":      {func(d *event.WagerTransactionRejectedData) { d.Money = mustBRL(-1) }, event.ErrInvalidMoney},
+		"uninitialized money": {func(d *event.WagerTransactionRejectedData) { d.Money = money.Money{} }, event.ErrInvalidMoney},
+		"no failure code":     {func(d *event.WagerTransactionRejectedData) { d.FailureCode = "" }, event.ErrInvalidFailureCode},
+		"an unknown code":     {func(d *event.WagerTransactionRejectedData) { d.FailureCode = "MADE_UP" }, event.ErrInvalidFailureCode},
+		"the failure code":    {func(d *event.WagerTransactionRejectedData) { d.FailureCode = wager.FailureInternalPermanent }, event.ErrInvalidFailureCode},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := rejectedData(t)
+			c.mutate(&d)
+			_, err := event.NewWagerTransactionRejected(meta(), d)
+			require.ErrorIs(t, err, c.want)
+		})
+	}
+}
+
+func TestEveryRejectionCodeMakesAValidEvent(t *testing.T) {
+	for _, code := range wager.FailureCodes() {
+		if !code.IsRejection() {
+			continue
+		}
+		d := rejectedData(t)
+		d.FailureCode = code
+		_, err := event.NewWagerTransactionRejected(meta(), d)
+		require.NoError(t, err, code)
+	}
+}

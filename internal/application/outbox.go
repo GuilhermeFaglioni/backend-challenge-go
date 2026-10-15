@@ -65,3 +65,24 @@ type OutboundMessage struct {
 type MessageSender interface {
 	Send(ctx context.Context, messages []OutboundMessage) (refused map[uuid.UUID]error, err error)
 }
+
+// RetryReason says why a unit of work ran again.
+type RetryReason string
+
+const (
+	// RetrySerializationFailure: PostgreSQL aborted the transaction (40001).
+	RetrySerializationFailure RetryReason = "serialization_failure"
+	// RetryDeadlock: PostgreSQL broke a deadlock by aborting this transaction (40P01).
+	RetryDeadlock RetryReason = "deadlock"
+	// RetryConcurrentUpdate: the wallet changed under the unit of work (ErrConcurrentUpdate).
+	RetryConcurrentUpdate RetryReason = "concurrent_update"
+)
+
+// RetryReasons lists every RetryReason, so a metric can start each at zero.
+var RetryReasons = []RetryReason{RetrySerializationFailure, RetryDeadlock, RetryConcurrentUpdate}
+
+// RetryObserver is told each time a unit of work is retried: each is a concurrency
+// conflict that the retry absorbed.
+type RetryObserver interface {
+	Retried(RetryReason)
+}

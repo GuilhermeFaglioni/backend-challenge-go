@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
-	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/money"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/domain/wallet"
 )
 
@@ -45,21 +44,5 @@ func (r *WalletReader) ByID(ctx context.Context, id uuid.UUID) (wallet.Wallet, e
 		return wallet.Wallet{}, markTransient(fmt.Errorf("read wallet: %w", err))
 	}
 
-	cur, err := money.ParseCurrency(currency)
-	if err != nil {
-		return wallet.Wallet{}, fmt.Errorf("wallet %s has a currency the domain does not know: %w", id, err)
-	}
-	stored, err := money.FromMinor(balance, cur)
-	if err != nil {
-		return wallet.Wallet{}, fmt.Errorf("wallet %s balance: %w", id, err)
-	}
-	state := wallet.State{ID: id, PlayerID: playerID, Balance: stored, Version: version, CreatedAt: createdAt, UpdatedAt: updatedAt}
-	if lastTx != nil {
-		state.LastTransactionID = *lastTx
-	}
-	w, err := wallet.Rehydrate(state)
-	if err != nil {
-		return wallet.Wallet{}, fmt.Errorf("wallet %s is not a valid wallet: %w", id, err)
-	}
-	return w, nil
+	return rehydrateWallet(id, playerID, currency, balance, version, lastTx, createdAt, updatedAt)
 }

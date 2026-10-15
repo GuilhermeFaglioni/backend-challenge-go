@@ -30,6 +30,7 @@ type UnitOfWork struct {
 	pool        *pgxpool.Pool
 	maxAttempts int
 	backoff     func(attempt int) time.Duration
+	observer    application.RetryObserver
 }
 
 // NewUnitOfWork builds a unit of work with the default bounds.
@@ -45,7 +46,12 @@ func NewUnitOfWork(pool *pgxpool.Pool) *UnitOfWork {
 // WithRetry returns a copy that runs at most maxAttempts times, waiting
 // backoff(attempt) between attempts. For tests.
 func (u *UnitOfWork) WithRetry(maxAttempts int, backoff func(attempt int) time.Duration) *UnitOfWork {
-	return &UnitOfWork{pool: u.pool, maxAttempts: maxAttempts, backoff: backoff}
+	return &UnitOfWork{pool: u.pool, maxAttempts: maxAttempts, backoff: backoff, observer: u.observer}
+}
+
+// WithObserver returns a copy that tells the observer about every retry.
+func (u *UnitOfWork) WithObserver(o application.RetryObserver) *UnitOfWork {
+	return &UnitOfWork{pool: u.pool, maxAttempts: u.maxAttempts, backoff: u.backoff, observer: o}
 }
 
 var _ application.UnitOfWork = (*UnitOfWork)(nil)
@@ -60,6 +66,9 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context, repos 
 		err := u.once(ctx, fn)
 		if err == nil || !isRetryable(err) || attempt >= u.maxAttempts {
 			return markTransient(err)
+		}
+		if u.observer != nil {
+			u.observer.Retried(retryReason(err))
 		}
 		select {
 		case <-ctx.Done():
@@ -92,9 +101,24 @@ func (u *UnitOfWork) once(ctx context.Context, fn func(context.Context, applicat
 	return nil
 }
 
+// retryReason says which kind of conflict made a unit of work retry.
+func retryReason(err error) application.RetryReason {
+	if errors.Is(err, application.ErrConcurrentUpdate) {
+		return application.RetryConcurrentUpdate
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == sqlStateDeadlockDetected {
+		return application.RetryDeadlock
+	}
+	return application.RetrySerializationFailure
+}
+
 // isRetryable reports whether the error is one PostgreSQL says to retry the whole
 // transaction for.
 func isRetryable(err error) bool {
+	if errors.Is(err, application.ErrConcurrentUpdate) {
+		return true
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return false
