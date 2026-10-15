@@ -261,6 +261,7 @@ type UnitOfWork interface {
 ```
 
   O caso de uso decide o escopo; os repositórios nunca iniciam ou finalizam transação por conta própria. Assim, estado da transação, saldo, ledger, inbox e outbox são confirmados atomicamente. `Do` faz rollback em qualquer erro e em `panic`, e repete a função um número limitado de vezes para `40001` (serialization failure) e `40P01` (deadlock).
+  Na implementação (`internal/adapters/postgres`), `Do` tenta no máximo 3 vezes, com espera curta e crescente entre as tentativas, reconhece `40001` e `40P01` venham da função ou do commit, não repete nenhum outro erro (violação de unicidade, de `CHECK` ou erro de negócio) e respeita o contexto: com o contexto cancelado não começa trabalho, e a espera pela nova tentativa é interrompida. O rollback acontece em erro e em `panic` (que continua depois), com um contexto próprio, para funcionar mesmo quando o contexto do chamador foi o motivo. A função pode rodar mais de uma vez, então não pode ter efeitos fora da transação; o caso de uso monta os objetos de domínio e os ids **antes** do `Do`, e as tentativas repetem os mesmos ids. O repositório de carteiras usa `INSERT ... ON CONFLICT (player_id, currency) DO NOTHING` em vez de capturar a violação: uma violação abortaria a transação inteira, e o id da carteira existente precisa ser lido depois.
 - **Isolamento:** `READ COMMITTED` no fluxo financeiro, com lock explícito de linha por carteira (seção 7). A reconciliação usa `REPEATABLE READ READ ONLY`.
 - Toda operação de I/O recebe `context.Context` e respeita cancelamento e timeout.
 
@@ -371,6 +372,8 @@ A ordem dos passos 2 a 5 é a da seção 7 e vale para todos os pontos de entrad
 3. **Saldo inicial positivo:** cria a transação `OPENING` (`origin = INTERNAL`, já em `PROCESSED`, id interno estável gerado no caso de uso), o lançamento de crédito (`balance_before = 0`, `balance_after = saldo inicial`), aponta `last_transaction_id` para ela e grava na outbox `WagerTransactionProcessed` e `WalletBalanceChanged` (com `walletVersion = 1`). Os eventos de origem interna não carregam os metadados externos (provedor, id externo, rodada, jogo).
 4. **Saldo inicial zero:** apenas a carteira. Sem `OPENING`, sem ledger e sem eventos financeiros.
 5. Commit e resposta `201` com `id`, `playerId`, `balance` e `version`.
+
+**No código (`internal/application/openwallet`):** o caso de uso valida e monta tudo fora da transação (carteira, `OPENING` já em `PROCESSED`, lançamento e os dois eventos) e a transação apenas grava, nesta ordem: carteira (as demais linhas apontam para ela), transação, lançamento, eventos. Saldo zero grava só a carteira. Os desfechos são contados em `wallet_open_total{outcome}` (`created`, `conflict`, `invalid`, `error`), todos começando em zero. Vinte e cinco aberturas concorrentes do mesmo jogador e moeda produzem exatamente uma carteira; as demais recebem `*WalletAlreadyExistsError` com o id dela.
 
 O endpoint não recebe chave de idempotência. Um reenvio depois de um timeout recebe `409`, e o corpo do erro inclui o `walletId` existente, para o cliente interno confirmar o resultado com `GET /wallets/:id`. A unicidade de `(player_id, currency)` e de `OPENING` por carteira impedem crédito inicial duplicado.
 

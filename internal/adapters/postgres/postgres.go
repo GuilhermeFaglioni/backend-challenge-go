@@ -1,5 +1,5 @@
-// Package postgres holds the PostgreSQL connection pool and, later, the
-// repositories and the UnitOfWork implementation (see ARCHITECTURE.md §6).
+// Package postgres holds the PostgreSQL connection pool, the UnitOfWork and the
+// repositories bound to its transaction (see ARCHITECTURE.md §6).
 package postgres
 
 import (
@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 
+	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/application"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/config"
 	"github.com/GuilhermeFaglioni/backend-challenge-go/internal/platform/health"
 )
@@ -17,6 +18,7 @@ import (
 var Module = fx.Module("postgres",
 	fx.Provide(
 		NewPool,
+		fx.Annotate(NewUnitOfWork, fx.As(new(application.UnitOfWork))),
 		fx.Annotate(newReadinessCheck, fx.ResultTags(`group:"readiness"`)),
 	),
 )

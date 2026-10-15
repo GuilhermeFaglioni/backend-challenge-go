@@ -39,6 +39,7 @@ func New(cfg config.Config) fx.Option {
 		postgres.Module,
 		sqsclient.Module,
 		auth.Module,
+		usecases,
 		httpapi.Module,
 	)
 }
