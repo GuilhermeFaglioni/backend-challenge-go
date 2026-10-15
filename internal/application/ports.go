@@ -50,11 +50,13 @@ type WalletRepository interface {
 type TransactionRepository interface {
 	// InsertOpening stores an internal opening in its final state.
 	InsertOpening(ctx context.Context, tx wager.Transaction) error
-	// FindByKey reads the provider's transaction with that idempotency key. Keys are
-	// scoped by provider: one provider never sees another's.
-	FindByKey(ctx context.Context, providerID, idempotencyKey string) (wager.Transaction, bool, error)
-	// FindByExternalID reads the provider's transaction with that external id.
-	FindByExternalID(ctx context.Context, providerID, externalTransactionID string) (wager.Transaction, bool, error)
+	// Find reads the provider's transactions that have this idempotency key or this
+	// external id, in ONE statement, so both answers come from the same snapshot of the
+	// database. Two separate lookups would not: a transaction committed between them
+	// could be missed by the first and found by the second, and the same request would
+	// look like two different ones. Keys and ids are scoped by provider: one provider
+	// never sees another's.
+	Find(ctx context.Context, providerID, idempotencyKey, externalTransactionID string) (ExistingTransactions, error)
 	// Claim stores the transaction, taking its idempotency key and its external id,
 	// unless either is already taken: then it stores nothing and returns false. It
 	// waits for a concurrent claim of the same key to end, so the answer is final.
@@ -78,6 +80,13 @@ type OutboxRepository interface {
 type WalletReader interface {
 	// ByID returns the wallet, or ErrWalletNotFound.
 	ByID(ctx context.Context, id uuid.UUID) (wallet.Wallet, error)
+}
+
+// ExistingTransactions is what Find found: the transaction with the idempotency key,
+// and the one with the external id (the same one, when the same request was stored).
+type ExistingTransactions struct {
+	ByKey, ByExternalID       wager.Transaction
+	HasByKey, HasByExternalID bool
 }
 
 // ErrWalletNotFound: there is no wallet with that id.

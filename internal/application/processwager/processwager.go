@@ -224,21 +224,19 @@ func (u *UseCase) rejectUnknownWallet(ctx context.Context, repos application.Rep
 }
 
 // stored looks for an answer already in the database: a replay, or a conflict. It
-// returns a zero Output and no error when the request is new.
+// returns a zero Output and no error when the request is new. It asks once: the key and
+// the external id are looked up in the same statement, so they are seen in the same
+// snapshot (see application.TransactionRepository.Find).
 func (u *UseCase) stored(ctx context.Context, transactions application.TransactionRepository, pending wager.Transaction) (Output, Outcome, error) {
 	external := pending.External()
-	byKey, found, err := transactions.FindByKey(ctx, external.ProviderID, external.IdempotencyKey)
+	existing, err := transactions.Find(ctx, external.ProviderID, external.IdempotencyKey, external.ExternalTransactionID)
 	if err != nil {
 		return Output{}, "", err
 	}
-	if found {
-		return replayOrConflict(byKey, pending)
-	}
-	_, found, err = transactions.FindByExternalID(ctx, external.ProviderID, external.ExternalTransactionID)
-	if err != nil {
-		return Output{}, "", err
-	}
-	if found {
+	switch {
+	case existing.HasByKey:
+		return replayOrConflict(existing.ByKey, pending)
+	case existing.HasByExternalID:
 		return Output{}, OutcomeDuplicateExternal, ErrDuplicateExternalTransaction
 	}
 	return Output{}, "", nil

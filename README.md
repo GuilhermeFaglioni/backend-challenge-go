@@ -273,6 +273,10 @@ Cobrem hoje: três instâncias prontas; uma instância morta com `SIGKILL` sem a
 
 Em caso de falha, os logs de cada instância e de cada container vão para `INTEGRATION_LOG_DIR`. Os dados de cobertura dos processos vão para `MULTIINSTANCE_COVERDIR`.
 
+### Garantias financeiras com três processos
+
+`test/multiinstance/guarantees_test.go` roda os cenários obrigatórios do desafio pela API HTTP contra três processos reais (cada um com suas conexões e memória), com o detector de corrida: a mesma aposta enviada 50 vezes em paralelo é debitada uma vez; 100,00 com duas apostas de 80,00 ao mesmo tempo dão uma processada, uma `INSUFFICIENT_FUNDS`, saldo 20,00 e um único débito; operações em carteiras diferentes não esperam umas pelas outras; e, depois de reiniciar todas as instâncias, o que foi processado continua sendo reproduzido com a resposta original e o saldo igual. Cada cenário termina conferindo que o saldo é a soma dos créditos menos os débitos do ledger. Esta suíte já encontrou uma corrida real (ver ARCHITECTURE.md, seção 8).
+
 ### Proteção da `main`
 
 As regras do repositório (PR obrigatório, checks exigidos, somente squash, tags `v*` restritas) estão em [.github/rulesets](.github/rulesets). Para ver o que seria aplicado, sem alterar nada, e para aplicar (exige ser administrador do repositório):
