@@ -7,6 +7,7 @@ Serviço em Go que processa operações financeiras de provedores de jogos (`BET
 - Ordem de construção e definição de pronto: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Entrega, evidência por critério e resultado dos cenários obrigatórios: [docs/DELIVERY.md](docs/DELIVERY.md); teste de carga: [docs/LOAD_TEST.md](docs/LOAD_TEST.md)
 - Vocabulário do projeto: [CONTEXT.md](CONTEXT.md)
+- Como o projeto foi planejado e verificado, e o papel da IA nele: [docs/PROCESS.md](docs/PROCESS.md)
 
 > **Status: entregue.** Todos os endpoints do enunciado, o consumidor SQS com inbox, a outbox, as operações `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (inclusive à espera da referência), a reconciliação, a autenticação e o CI/CD estão implementados e testados. O que foi medido, o que ficou de fora e a evidência de cada critério de avaliação estão em [docs/DELIVERY.md](docs/DELIVERY.md); as decisões, em [ARCHITECTURE.md](ARCHITECTURE.md).
 
