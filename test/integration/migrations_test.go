@@ -98,6 +98,9 @@ func TestApplicationRolePrivileges(t *testing.T) {
 		"cannot truncate the ledger":                                  `TRUNCATE wallet_ledger_entries`,
 		"cannot disable the ledger triggers":                          `ALTER TABLE wallet_ledger_entries DISABLE TRIGGER ALL`,
 		"deletes from the outbox only through the retention function": `DELETE FROM outbox`,
+		"writes checkpoints only through the function":                `INSERT INTO reconciliation_checkpoints (wallet_id, through_seq, credits_minor, debits_minor, entries) VALUES (gen_random_uuid(), 1, 0, 0, 1)`,
+		"cannot change a checkpoint":                                  `UPDATE reconciliation_checkpoints SET entries = 1`,
+		"cannot delete a checkpoint":                                  `DELETE FROM reconciliation_checkpoints`,
 	}
 	for name, statement := range denied {
 		t.Run(name, func(t *testing.T) {

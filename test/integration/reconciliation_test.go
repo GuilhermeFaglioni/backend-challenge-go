@@ -23,12 +23,25 @@ type reconciliationJSON struct {
 	Difference        struct{ Amount string } `json:"difference"`
 	Consistent        bool                    `json:"consistent"`
 	CheckedEntries    int64                   `json:"checkedEntries"`
+	Mode              string                  `json:"mode"`
+	ReadEntries       int64                   `json:"readEntries"`
+	CheckpointMatches *bool                   `json:"checkpointMatches"`
 	Error             struct{ Code string }   `json:"error"`
 }
 
 func (a walletAPI) reconcile(t *testing.T, client *contractClient, token, walletID string) (int, reconciliationJSON) {
 	t.Helper()
-	status, _, raw := client.call(t.Context(), http.MethodPost, a.base+"/wallets/"+walletID+"/reconciliation", token, "")
+	return a.reconcileAt(t, client, token, walletID, "")
+}
+
+func (a walletAPI) reconcileFull(t *testing.T, client *contractClient, token, walletID string) (int, reconciliationJSON) {
+	t.Helper()
+	return a.reconcileAt(t, client, token, walletID, "?full=true")
+}
+
+func (a walletAPI) reconcileAt(t *testing.T, client *contractClient, token, walletID, query string) (int, reconciliationJSON) {
+	t.Helper()
+	status, _, raw := client.call(t.Context(), http.MethodPost, a.base+"/wallets/"+walletID+"/reconciliation"+query, token, "")
 	var result reconciliationJSON
 	_ = json.Unmarshal([]byte(raw), &result)
 	return status, result
@@ -86,7 +99,7 @@ func TestAConsistentWalletIsReconciledAndNothingIsChanged(t *testing.T) {
 		_, again := a.reconcile(t, a.strict, a.internal, w.id)
 		require.True(t, again.Consistent)
 	}
-	require.Equal(t, before, a.fingerprint(t), "reconciling changes nothing: not a row, not even a row version")
+	require.Equal(t, before, a.fingerprint(t), "reconciling changes nothing in the books: not a row, not even a row version")
 	a.strict.requireNoViolations()
 }
 

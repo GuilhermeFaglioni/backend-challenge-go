@@ -22,10 +22,12 @@ type fakeReconciler struct {
 	result reconcile.Result
 	err    error
 	calls  []uuid.UUID
+	modes  []reconcile.Mode
 }
 
-func (f *fakeReconciler) Execute(_ context.Context, id uuid.UUID) (reconcile.Result, error) {
+func (f *fakeReconciler) Execute(_ context.Context, id uuid.UUID, mode reconcile.Mode) (reconcile.Result, error) {
 	f.calls = append(f.calls, id)
+	f.modes = append(f.modes, mode)
 	return f.result, f.err
 }
 
@@ -60,8 +62,44 @@ func TestAConsistentWalletAnswers200WithTheBooks(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.JSONEq(t, fmt.Sprintf(`{"walletId":%q,"storedBalance":{"amount":"75.00","currency":"BRL"},
 		"calculatedBalance":{"amount":"75.00","currency":"BRL"},"difference":{"amount":"0.00","currency":"BRL"},
-		"consistent":true,"checkedEntries":2}`, id), rec.Body.String())
+		"consistent":true,"checkedEntries":2,"mode":"incremental","readEntries":0}`, id), rec.Body.String())
 	require.Equal(t, []uuid.UUID{id}, fake.calls)
+	require.Equal(t, []reconcile.Mode{reconcile.Incremental}, fake.modes, "incremental unless asked otherwise")
+}
+
+func TestFullAsksForAFullCheckAndReportsTheCheckpoint(t *testing.T) {
+	for query, want := range map[string]reconcile.Mode{"?full=true": reconcile.Full, "?full=false": reconcile.Incremental, "": reconcile.Incremental} {
+		routes, fake, id := newReconciliationEnv(t)
+		rec := reconcileRequest(routes, "internal-token", "/wallets/"+id.String()+"/reconciliation"+query)
+		require.Equal(t, http.StatusOK, rec.Code, query)
+		require.Equal(t, []reconcile.Mode{want}, fake.modes, query)
+	}
+
+	routes, fake, id := newReconciliationEnv(t)
+	fake.result.Mode, fake.result.ReadEntries, fake.result.CheckpointChecked = reconcile.Full, 2, true
+	fake.result.Consistent, fake.result.CheckpointMismatch = false, true
+	rec := reconcileRequest(routes, "internal-token", "/wallets/"+id.String()+"/reconciliation?full=true")
+	require.Contains(t, rec.Body.String(), `"mode":"full"`)
+	require.Contains(t, rec.Body.String(), `"readEntries":2`)
+	require.Contains(t, rec.Body.String(), `"checkpointMatches":false`)
+
+	fake.result.CheckpointMismatch = false
+	rec = reconcileRequest(routes, "internal-token", "/wallets/"+id.String()+"/reconciliation?full=true")
+	require.Contains(t, rec.Body.String(), `"checkpointMatches":true`)
+
+	fake.result.CheckpointChecked = false
+	rec = reconcileRequest(routes, "internal-token", "/wallets/"+id.String()+"/reconciliation?full=true")
+	require.NotContains(t, rec.Body.String(), "checkpointMatches", "no checkpoint, nothing to say about one")
+}
+
+func TestAFullValueThatIsNotABooleanIs400AndChecksNothing(t *testing.T) {
+	for _, query := range []string{"?full=yes", "?full=1", "?full=", "?full=true&full=true", "?full=TRUE"} {
+		routes, fake, id := newReconciliationEnv(t)
+		rec := reconcileRequest(routes, "internal-token", "/wallets/"+id.String()+"/reconciliation"+query)
+		require.Equal(t, http.StatusBadRequest, rec.Code, query)
+		require.Contains(t, rec.Body.String(), `"field":"full"`, query)
+		require.Empty(t, fake.calls, query)
+	}
 }
 
 func TestADivergenceIsStill200AndShowsTheSignedDifference(t *testing.T) {
