@@ -82,7 +82,7 @@ O texto completo está em ARCHITECTURE §17. Em resumo:
 
 - O teste de carga (opcional) foi feito e está em [LOAD_TEST.md](LOAD_TEST.md), com a ressalva de que mede ordens de grandeza num notebook e de que uma carteira só é publicada na outbox a ~150 eventos/s. Ficaram de fora partidas dobradas, tracing e dashboards.
 - A outbox publica no máximo ~150 eventos/s por carteira.
-- A reconciliação incremental confia no último checkpoint; só a completa (`?full=true`), cujo custo cresce com o ledger, vê uma alteração do ledger anterior a ele.
+- A reconciliação padrão lê o ledger inteiro, então seu custo cresce com o número de lançamentos; a incremental (`?mode=incremental`) é barata mas confia no último checkpoint.
 - Os tokens locais usam `http`. (`/metrics` exige o papel `monitoring`, do cliente `metrics-scraper`.)
 
 ## Release

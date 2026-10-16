@@ -430,13 +430,14 @@ paths:
         two are read in one consistent snapshot, so writes going on at the same time cannot
         make them disagree. The wallet and its ledger are never changed.
 
-        By default the check is incremental: it continues from the wallet's last
-        checkpoint and reads only the entries recorded after it, so its cost follows what
-        happened since the last check, not the size of the ledger. A check that finds the
-        books consistent records a new checkpoint through the last entry. Checkpoints are
-        computed by the database from the ledger itself, never by the caller. `full=true`
-        reads the whole ledger instead and also checks the last checkpoint against it
-        (`checkpointMatches`); a checkpoint that does not match makes the books inconsistent.
+        By default (`mode=full`) every check reads the whole ledger, and also checks the
+        wallet's last checkpoint against it (`checkpointMatches`); a checkpoint that does
+        not match makes the books inconsistent. A check that finds the books consistent
+        records a checkpoint through the last entry; checkpoints are computed by the
+        database from the ledger itself, never by the caller. `mode=incremental` continues
+        from the last checkpoint and reads only the entries recorded after it, so its cost
+        follows what happened since the last check, not the size of the ledger; it trusts
+        the checkpoint.
 
         The answer is `200` also when the books do not agree: a divergence is what the
         check found, not a problem with the request. It is reported in `consistent: false`
@@ -446,11 +447,11 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
-        - name: full
+        - name: mode
           in: query
           required: false
-          description: '`true` reads the whole ledger and checks the last checkpoint. Only `true` or `false`, once.'
-          schema: { type: boolean, default: false }
+          description: '`full` (the default) reads the whole ledger and checks the last checkpoint; `incremental` continues from it. Given at most once.'
+          schema: { type: string, enum: [full, incremental], default: full }
         - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':

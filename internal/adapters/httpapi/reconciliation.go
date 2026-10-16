@@ -55,13 +55,14 @@ func (h *Reconciliation) reconcile(w http.ResponseWriter, req *http.Request) {
 		writeInvalid(w, []fieldIssue{{Field: "walletId", Issue: err.Error()}})
 		return
 	}
-	mode := reconcile.Incremental
-	switch full := req.URL.Query()["full"]; {
-	case len(full) == 0 || (len(full) == 1 && full[0] == "false"):
-	case len(full) == 1 && full[0] == "true":
-		mode = reconcile.Full
+	// Full unless asked otherwise: the balance is rebuilt from the whole ledger.
+	mode := reconcile.Full
+	switch given := req.URL.Query()["mode"]; {
+	case len(given) == 0 || (len(given) == 1 && given[0] == "full"):
+	case len(given) == 1 && given[0] == "incremental":
+		mode = reconcile.Incremental
 	default:
-		writeInvalid(w, []fieldIssue{{Field: "full", Issue: "must be true or false, given once"}})
+		writeInvalid(w, []fieldIssue{{Field: "mode", Issue: "must be full or incremental, given once"}})
 		return
 	}
 	result, err := h.reconciler.Execute(req.Context(), id, mode)

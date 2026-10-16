@@ -101,16 +101,16 @@ O ledger de uma carteira (somente o serviço interno), da entrada mais antiga pa
 curl -s "localhost:8081/wallets/<id-da-carteira>/ledger?limit=50" -H "Authorization: Bearer $TOKEN"
 ```
 
-Reconciliar uma carteira (somente o serviço interno): recalcula o saldo a partir do ledger e compara com o saldo guardado. Responde `200` mesmo quando há divergência, com `consistent:false` e a `difference` (guardado menos calculado); a divergência também vira um log `ERROR` e incrementa `reconciliation_divergences_total`. A carteira e o ledger não são alterados. Por padrão a verificação é incremental: continua do último checkpoint (gravado pelo banco depois de uma verificação coerente) e lê só os lançamentos posteriores (`readEntries`).
+Reconciliar uma carteira (somente o serviço interno): recalcula o saldo a partir do ledger e compara com o saldo guardado. Responde `200` mesmo quando há divergência, com `consistent:false` e a `difference` (guardado menos calculado); a divergência também vira um log `ERROR` e incrementa `reconciliation_divergences_total`. A carteira e o ledger não são alterados. Por padrão a verificação é completa: lê o ledger inteiro e confere também o último checkpoint (`checkpointMatches`), que o banco grava depois de uma verificação coerente.
 
 ```bash
 curl -s -X POST localhost:8081/wallets/<id-da-carteira>/reconciliation -H "Authorization: Bearer $TOKEN"
 ```
 
-A verificação completa lê o ledger inteiro e confere também o checkpoint (`checkpointMatches`):
+A verificação incremental continua do último checkpoint e lê só os lançamentos posteriores (`readEntries`), mais barata e confiando no checkpoint:
 
 ```bash
-curl -s -X POST "localhost:8081/wallets/<id-da-carteira>/reconciliation?full=true" -H "Authorization: Bearer $TOKEN"
+curl -s -X POST "localhost:8081/wallets/<id-da-carteira>/reconciliation?mode=incremental" -H "Authorization: Bearer $TOKEN"
 ```
 
 Outros endpoints:

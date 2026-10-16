@@ -127,7 +127,7 @@ func (g *guarantees) bet(t *testing.T, instance *infra.Instance, w wallet, exter
 // check: every entry, and the checkpoint against them).
 func (g *guarantees) reconcile(t *testing.T, instance *infra.Instance, w wallet) (stored, calculated string, consistent bool) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+instance.Addr+"/wallets/"+w.id+"/reconciliation?full=true", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+instance.Addr+"/wallets/"+w.id+"/reconciliation", nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+g.h.token)
 	resp, err := g.client.Do(req)

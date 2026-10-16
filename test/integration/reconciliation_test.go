@@ -34,9 +34,9 @@ func (a walletAPI) reconcile(t *testing.T, client *contractClient, token, wallet
 	return a.reconcileAt(t, client, token, walletID, "")
 }
 
-func (a walletAPI) reconcileFull(t *testing.T, client *contractClient, token, walletID string) (int, reconciliationJSON) {
+func (a walletAPI) reconcileIncremental(t *testing.T, client *contractClient, token, walletID string) (int, reconciliationJSON) {
 	t.Helper()
-	return a.reconcileAt(t, client, token, walletID, "?full=true")
+	return a.reconcileAt(t, client, token, walletID, "?mode=incremental")
 }
 
 func (a walletAPI) reconcileAt(t *testing.T, client *contractClient, token, walletID, query string) (int, reconciliationJSON) {
@@ -94,10 +94,13 @@ func TestAConsistentWalletIsReconciledAndNothingIsChanged(t *testing.T) {
 	require.Equal(t, "65.00", result.CalculatedBalance.Amount)
 	require.Equal(t, "0.00", result.Difference.Amount)
 	require.Equal(t, int64(6), result.CheckedEntries, "the opening and five bets")
+	require.Equal(t, "full", result.Mode, "the balance is rebuilt from the whole ledger unless asked otherwise")
+	require.Equal(t, int64(6), result.ReadEntries)
 
 	for i := 0; i < 5; i++ {
 		_, again := a.reconcile(t, a.strict, a.internal, w.id)
 		require.True(t, again.Consistent)
+		require.Equal(t, int64(6), again.ReadEntries, "every check reads the whole ledger again, checkpoint or not")
 	}
 	require.Equal(t, before, a.fingerprint(t), "reconciling changes nothing in the books: not a row, not even a row version")
 	a.strict.requireNoViolations()

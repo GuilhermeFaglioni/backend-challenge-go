@@ -20,23 +20,24 @@ import (
 // very wrong with the data, and the check says so instead of wrapping around.
 var ErrBooksOutOfRange = errors.New("reconcile: the ledger adds up to an amount out of range")
 
-// Mode is how much of the ledger a reconciliation reads.
+// Mode is how much of the ledger a reconciliation reads. The zero value is Full: the
+// check the contract describes, the balance rebuilt from every entry.
 type Mode int
 
 const (
-	// Incremental continues from the wallet's last checkpoint: it reads only the entries
-	// recorded after it.
-	Incremental Mode = iota
 	// Full reads the whole ledger, ignoring checkpoints for the balance, and checks the
 	// last checkpoint against what the ledger adds up to through its seq.
-	Full
+	Full Mode = iota
+	// Incremental continues from the wallet's last checkpoint: it reads only the entries
+	// recorded after it. Cheaper, and it trusts the checkpoint.
+	Incremental
 )
 
 func (m Mode) String() string {
-	if m == Full {
-		return "full"
+	if m == Incremental {
+		return "incremental"
 	}
-	return "incremental"
+	return "full"
 }
 
 // Result is what the check found.
